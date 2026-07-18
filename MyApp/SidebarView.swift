@@ -254,11 +254,19 @@ struct SheetListColumn: View {
                             .font(.system(size: 7))
                             .foregroundStyle(.orange.opacity(0.7))
                     }
+                    if sheet.isMaterial {
+                        Image(systemName: "paperclip")
+                            .font(.system(size: 7))
+                            .foregroundStyle(.quaternary)
+                    }
                 }
             }
             .padding(.vertical, 2)
             .contextMenu {
                 Button("Renommer") { renamingSheetID = sheet.id; renamingTitle = sheet.title }
+                Button(sheet.isMaterial ? "Ne plus marquer comme matériel" : "Marquer comme matériel") {
+                    library.toggleMaterial(sheet.id)
+                }
                 Divider()
                 Button("Supprimer", role: .destructive) {
                     library.deleteSheet(sheet.id)

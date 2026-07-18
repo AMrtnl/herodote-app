@@ -11,6 +11,9 @@ struct EditorDetailView: View {
     @State private var showInspector  = false
     @State private var showLinkPicker = false
     @State private var showAddComment = false
+    @State private var showVersions   = false
+    @State private var showExport     = false
+    @State private var showSavedFlash = false
     @State private var commentDraft   = ""
 
     var body: some View {
@@ -26,10 +29,22 @@ struct EditorDetailView: View {
                     .padding(.top, 12)
                     .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
             }
+
+            if showSavedFlash {
+                Text("Version enregistrée")
+                    .font(.caption)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(.top, 52)
+                    .transition(.opacity)
+            }
         }
         .animation(.spring(response: 0.22, dampingFraction: 0.8), value: state.hasSelection)
+        .animation(.easeInOut(duration: 0.2), value: showSavedFlash)
         .focusedSceneValue(\.editorState, state)
         .navigationTitle(sheet.title)
+        .toolbar(settings.writingMode ? .hidden : .automatic, for: .windowToolbar)
         .toolbar {
             // Word count
             ToolbarItem(placement: .status) {
@@ -39,24 +54,12 @@ struct EditorDetailView: View {
                     .monospacedDigit()
             }
 
-            // Writing mode — hides sidebar + typewriter centering + paragraph dimming
+            // Version history — everything else lives in menus and the palette (⌘⇧P)
             ToolbarItem(placement: .primaryAction) {
-                Button {
-                    state.toggleWritingMode()
-                } label: {
-                    Image(systemName: settings.writingMode ? "pencil.line" : "pencil")
+                Button { showVersions = true } label: {
+                    Image(systemName: "clock.arrow.circlepath")
                 }
-                .help(settings.writingMode ? "Quitter le mode écriture" : "Mode écriture")
-                .keyboardShortcut("f", modifiers: [.command, .shift])
-            }
-
-            // Link picker
-            ToolbarItem(placement: .primaryAction) {
-                Button { showLinkPicker = true } label: {
-                    Image(systemName: "link.badge.plus")
-                }
-                .help("Insérer un lien (⌘K)")
-                .keyboardShortcut("k", modifiers: .command)
+                .help("Historique des versions — ⌘S enregistre une version")
             }
 
             // Inspector
@@ -94,6 +97,57 @@ struct EditorDetailView: View {
                 showAddComment = false
             }
         }
+        .sheet(isPresented: $showVersions) {
+            VersionHistorySheet(sheet: $sheet, onRestore: { restore($0) }, onClose: { showVersions = false })
+        }
+        .sheet(isPresented: $showExport) {
+            ExportSheet(sheets: [sheet], title: sheet.title) { showExport = false }
+        }
+        .task {
+            state.requestSaveVersion = { saveVersion() }
+            state.requestHistory     = { showVersions = true }
+            state.requestExport      = { showExport = true }
+            state.requestLink        = { showLinkPicker = true }
+            consumePendingScroll()
+        }
+        .onChange(of: PaletteState.shared.pendingScroll) { consumePendingScroll() }
+    }
+
+    // MARK: Versions
+
+    private func saveVersion() {
+        if sheet.versions.last?.contentData != sheet.contentData {
+            sheet.versions.append(SheetVersion(contentData: sheet.contentData, wordCount: sheet.wordCount))
+            if sheet.versions.count > 50 {
+                sheet.versions.removeFirst(sheet.versions.count - 50)
+            }
+        }
+        flashSaved()
+    }
+
+    private func restore(_ version: SheetVersion) {
+        saveVersion()   // never lose the current text
+        state.replaceAll(with: version.attributedString)
+        showVersions = false
+    }
+
+    private func flashSaved() {
+        showSavedFlash = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.2))
+            showSavedFlash = false
+        }
+    }
+
+    // MARK: Palette navigation handoff
+
+    private func consumePendingScroll() {
+        guard let pending = PaletteState.shared.pendingScroll, pending.sheetID == sheet.id else { return }
+        PaletteState.shared.pendingScroll = nil
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(150))
+            state.scrollTo(range: pending.range)
+        }
     }
 }
 
@@ -107,9 +161,10 @@ struct FormatBar: View {
     var body: some View {
         GlassEffectContainer {
             HStack(spacing: 2) {
-                fBtn("bold")      { state.bold() }
-                fBtn("italic")    { state.italic() }
-                fBtn("underline") { state.underline() }
+                fBtn("bold")          { state.bold() }
+                fBtn("italic")        { state.italic() }
+                fBtn("strikethrough") { state.strikethrough() }
+                fBtn("underline")     { state.underline() }
                 sep
                 fBtn("textformat.size.larger") { state.heading(1) }
                 fBtn("textformat.size")        { state.heading(2) }

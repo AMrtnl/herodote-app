@@ -20,6 +20,8 @@ struct HerodoApp: App {
                 Button("Nouveau Groupe") { LibraryManager.shared.createGroup() }
                     .keyboardShortcut("n", modifiers: .command)
             }
+            FormatCommands()
+            PaletteCommands()
         }
 
         Settings {
@@ -35,6 +37,7 @@ struct LibraryRootView: View {
     @State private var selectedGroupID: UUID?
     @State private var selectedSheetID: UUID?
     @State private var showProfile = false
+    @State private var showGroupExport = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
@@ -75,6 +78,20 @@ struct LibraryRootView: View {
                 .id(sheetID)
             } else {
                 WelcomeDetail(showProfile: $showProfile)
+            }
+        }
+        .overlay {
+            if PaletteState.shared.isOpen {
+                PaletteOverlay(
+                    selectedGroupID: $selectedGroupID,
+                    selectedSheetID: $selectedSheetID,
+                    showGroupExport: $showGroupExport
+                )
+            }
+        }
+        .sheet(isPresented: $showGroupExport) {
+            if let groupID = selectedGroupID, let group = library.group(id: groupID) {
+                ExportSheet(sheets: group.allSheets, title: group.title) { showGroupExport = false }
             }
         }
         .onChange(of: AppSettings.shared.writingMode) { _, writing in

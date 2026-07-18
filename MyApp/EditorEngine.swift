@@ -8,9 +8,15 @@ import SwiftUI
     var hasSelection = false
     var wordCount = 0
 
+    // Set by EditorDetailView so menu commands and the palette can trigger sheet-level actions.
+    @ObservationIgnored var requestSaveVersion: (() -> Void)?
+    @ObservationIgnored var requestHistory:     (() -> Void)?
+    @ObservationIgnored var requestExport:      (() -> Void)?
+    @ObservationIgnored var requestLink:        (() -> Void)?
+
     func refreshStats() {
         guard let tv = textView else { return }
-        wordCount = tv.string.split { $0.isWhitespace || $0.isNewline }.filter { !$0.isEmpty }.count
+        wordCount = countWords(in: tv.string)
         hasSelection = tv.selectedRange().length > 0
     }
 
@@ -19,37 +25,64 @@ import SwiftUI
         return tv.selectedRange()
     }
 
-    // MARK: Formatting
+    // MARK: Formatting — writes Markdown markers (the markup is the source of truth)
 
-    func bold()   { toggleTrait(.bold) }
-    func italic() { toggleTrait(.italic) }
+    func bold()          { toggleMarkerPair("**") }
+    func italic()        { toggleMarkerPair("*") }
+    func strikethrough() { toggleMarkerPair("~~") }
 
     func underline() {
-        guard let tv = textView, tv.selectedRange().length > 0 else { return }
+        guard let tv = textView else { return }
         let r = tv.selectedRange()
+        if r.length == 0 {
+            // No Markdown syntax for underline — toggle the typing attribute instead
+            var attrs = tv.typingAttributes
+            let cur = attrs[.underlineStyle] as? Int ?? 0
+            attrs[.underlineStyle] = cur == 0 ? NSUnderlineStyle.single.rawValue : 0
+            tv.typingAttributes = attrs
+            return
+        }
         let cur = tv.textStorage?.attribute(.underlineStyle, at: r.location, effectiveRange: nil) as? Int ?? 0
         tv.textStorage?.addAttribute(.underlineStyle,
             value: cur == 0 ? NSUnderlineStyle.single.rawValue : 0, range: r)
     }
 
+    /// Insert, replace or toggle a "#…# " prefix on the current paragraph.
     func heading(_ level: Int) {
         guard let tv = textView else { return }
-        let r = (tv.string as NSString).paragraphRange(for: tv.selectedRange())
-        let font: NSFont = level == 1
-            ? .systemFont(ofSize: 30, weight: .bold)
-            : .systemFont(ofSize: 22, weight: .semibold)
-        tv.textStorage?.addAttribute(.font, value: font, range: r)
+        let ns = tv.string as NSString
+        let para = ns.paragraphRange(for: tv.selectedRange())
+        let (hashes, prefixLen) = headingPrefix(ns, para)
+        let target = max(1, min(level, 3))
+        let existing = NSRange(location: para.location, length: prefixLen)
+        if hashes == target && prefixLen > 0 {
+            replaceUndoSafe(tv, range: existing, with: "")
+        } else {
+            replaceUndoSafe(tv, range: existing, with: String(repeating: "#", count: target) + " ")
+        }
     }
 
     func bodyStyle() {
         guard let tv = textView else { return }
-        let r = (tv.string as NSString).paragraphRange(for: tv.selectedRange())
+        let ns = tv.string as NSString
+        let para = ns.paragraphRange(for: tv.selectedRange())
+        let (_, prefixLen) = headingPrefix(ns, para)
+        if prefixLen > 0 {
+            replaceUndoSafe(tv, range: NSRange(location: para.location, length: prefixLen), with: "")
+        }
+        // Reset manual/legacy formatting on the paragraph, then let the
+        // highlighter re-derive whatever the remaining markers justify.
+        guard let ts = tv.textStorage else { return }
         let settings = AppSettings.shared
-        tv.textStorage?.addAttributes([
+        let current = (tv.string as NSString).paragraphRange(for: tv.selectedRange())
+        ts.addAttributes([
             .font:            settings.editorFont(),
             .foregroundColor: NSColor.labelColor,
             .paragraphStyle:  settings.editorParagraphStyle
-        ], range: r)
+        ], range: current)
+        ts.removeAttribute(.herodoteMD, range: current)
+        MarkdownHighlighter.highlight(ts, in: current)
+        tv.didChangeText()
     }
 
     // Inserts a clickable herodote:// link at the current position
@@ -75,6 +108,34 @@ import SwiftUI
             value: NSColor.systemYellow.withAlphaComponent(0.35),
             range: range
         )
+    }
+
+    // MARK: Version restore / navigation
+
+    /// Undo-safe full-document replacement (used by version restore).
+    func replaceAll(with content: NSAttributedString) {
+        guard let tv = textView, let ts = tv.textStorage else { return }
+        let full = NSRange(location: 0, length: ts.length)
+        guard tv.shouldChangeText(in: full, replacementString: content.string) else { return }
+        ts.replaceCharacters(in: full, with: content)
+        tv.didChangeText()
+        tv.setSelectedRange(NSRange(location: 0, length: 0))
+        let settings = AppSettings.shared
+        tv.typingAttributes = [
+            .font:            settings.editorFont(),
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle:  settings.editorParagraphStyle
+        ]
+        refreshStats()
+    }
+
+    func scrollTo(range: NSRange) {
+        guard let tv = textView else { return }
+        let length = (tv.string as NSString).length
+        let target = NSRange(location: min(range.location, length), length: 0)
+        tv.setSelectedRange(target)
+        tv.scrollRangeToVisible(target)
+        tv.window?.makeFirstResponder(tv)
     }
 
     // MARK: Writing mode highlight
@@ -119,16 +180,70 @@ import SwiftUI
         }
     }
 
-    private func toggleTrait(_ trait: NSFontDescriptor.SymbolicTraits) {
-        guard let tv = textView, tv.selectedRange().length > 0 else { return }
-        let r = tv.selectedRange()
-        tv.textStorage?.enumerateAttribute(.font, in: r) { val, range, _ in
-            let f = val as? NSFont ?? NSFont.systemFont(ofSize: 18)
-            let t = f.fontDescriptor.symbolicTraits
-            let nt = t.contains(trait) ? t.subtracting(trait) : t.union(trait)
-            let newFont = NSFont(descriptor: f.fontDescriptor.withSymbolicTraits(nt), size: f.pointSize) ?? f
-            tv.textStorage?.addAttribute(.font, value: newFont, range: range)
+    // MARK: Marker plumbing
+
+    private func toggleMarkerPair(_ marker: String) {
+        guard let tv = textView else { return }
+        let mLen = (marker as NSString).length
+        var sel = tv.selectedRange()
+
+        if sel.length == 0 {
+            // Insert the pair, caret between the markers — typed text lands inside
+            if replaceUndoSafe(tv, range: sel, with: marker + marker) {
+                tv.setSelectedRange(NSRange(location: sel.location + mLen, length: 0))
+            }
+            return
         }
+
+        let ns = tv.string as NSString
+        // Markers must hug non-whitespace, so trim the selection edges
+        while sel.length > 0, Self.isWhitespace(ns.character(at: sel.location)) {
+            sel.location += 1; sel.length -= 1
+        }
+        while sel.length > 0, Self.isWhitespace(ns.character(at: NSMaxRange(sel) - 1)) {
+            sel.length -= 1
+        }
+        guard sel.length > 0 else { return }
+
+        // Unwrap when the selection is already exactly wrapped
+        let lead = NSRange(location: sel.location - mLen, length: mLen)
+        let trail = NSRange(location: NSMaxRange(sel), length: mLen)
+        if lead.location >= 0, NSMaxRange(trail) <= ns.length,
+           ns.substring(with: lead) == marker, ns.substring(with: trail) == marker {
+            replaceUndoSafe(tv, range: trail, with: "")
+            replaceUndoSafe(tv, range: lead, with: "")
+            tv.setSelectedRange(NSRange(location: lead.location, length: sel.length))
+            return
+        }
+
+        // Wrap — closing first so the opening insertion doesn't shift it
+        replaceUndoSafe(tv, range: NSRange(location: NSMaxRange(sel), length: 0), with: marker)
+        replaceUndoSafe(tv, range: NSRange(location: sel.location, length: 0), with: marker)
+        tv.setSelectedRange(NSRange(location: sel.location + mLen, length: sel.length))
+    }
+
+    @discardableResult
+    private func replaceUndoSafe(_ tv: NSTextView, range: NSRange, with string: String) -> Bool {
+        guard tv.shouldChangeText(in: range, replacementString: string) else { return false }
+        tv.textStorage?.replaceCharacters(in: range, with: string)
+        tv.didChangeText()
+        return true
+    }
+
+    private func headingPrefix(_ ns: NSString, _ para: NSRange) -> (hashes: Int, prefixLen: Int) {
+        var hashes = 0
+        while para.location + hashes < NSMaxRange(para),
+              ns.character(at: para.location + hashes) == 35 { hashes += 1 }
+        if hashes > 0, para.location + hashes < NSMaxRange(para),
+           ns.character(at: para.location + hashes) == 32 {
+            return (hashes, hashes + 1)
+        }
+        return (0, 0)
+    }
+
+    private static func isWhitespace(_ c: unichar) -> Bool {
+        guard let scalar = UnicodeScalar(c) else { return true }
+        return CharacterSet.whitespacesAndNewlines.contains(scalar)
     }
 }
 
@@ -187,11 +302,16 @@ struct RichTextEditor: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let tv = buildTextView()
         tv.delegate = context.coordinator
+        tv.textStorage?.delegate = context.coordinator
         tv.onLinkTap = { url in
             guard let host = url.host, let id = UUID(uuidString: host) else { return }
             context.coordinator.parent.onNavigate(id)
         }
         tv.textStorage?.setAttributedString(sheet.attributedString)
+        if let ts = tv.textStorage {
+            MarkdownHighlighter.highlight(ts, in: NSRange(location: 0, length: ts.length))
+        }
+        context.coordinator.pendingHighlightRange = nil
         context.coordinator.lastWordCount = sheet.wordCount
         context.coordinator.syncSettings(AppSettings.shared)
         state.textView = tv
@@ -260,13 +380,18 @@ struct RichTextEditor: NSViewRepresentable {
 
     // MARK: Coordinator
 
-    final class Coordinator: NSObject, NSTextViewDelegate {
+    final class Coordinator: NSObject, NSTextViewDelegate, NSTextStorageDelegate {
         var parent: RichTextEditor
         var lastWordCount:        Int    = 0
         var lastFontName:         String = ""
         var lastFontSize:         Double = 0
         var lastLineSpacing:      Double = -1
         var lastParagraphSpacing: Double = -1
+        var pendingHighlightRange: NSRange?
+
+        private var resetTypingAttributesAfterNewline = false
+        private var lastMarkerParagraph: NSRange?
+        private var markerFadeTask: Task<Void, Never>?
 
         init(parent: RichTextEditor) { self.parent = parent }
 
@@ -277,9 +402,47 @@ struct RichTextEditor: NSViewRepresentable {
             lastParagraphSpacing = s.paragraphSpacing
         }
 
+        // MARK: NSTextStorageDelegate
+
+        func textStorage(_ textStorage: NSTextStorage,
+                         didProcessEditing editedMask: NSTextStorage.EditActions,
+                         range editedRange: NSRange,
+                         changeInLength delta: Int) {
+            // Character edits queue a re-highlight. The highlighter's own edits
+            // arrive as .editedAttributes only, which breaks the recursion; this
+            // also covers paste, undo and programmatic replacement automatically.
+            guard editedMask.contains(.editedCharacters) else { return }
+            pendingHighlightRange = pendingHighlightRange.map { NSUnionRange($0, editedRange) } ?? editedRange
+        }
+
+        // MARK: NSTextViewDelegate
+
+        func textView(_ textView: NSTextView,
+                      shouldChangeTextIn affectedCharRange: NSRange,
+                      replacementString: String?) -> Bool {
+            resetTypingAttributesAfterNewline = replacementString == "\n"
+            return true
+        }
+
         func textDidChange(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView,
                   let ts = tv.textStorage else { return }
+
+            // Style before persisting so the snapshot carries the styling
+            if let pending = pendingHighlightRange {
+                pendingHighlightRange = nil
+                MarkdownHighlighter.highlight(ts, in: pending)
+            }
+            if resetTypingAttributesAfterNewline {
+                // Heading style must not leak into the next paragraph
+                resetTypingAttributesAfterNewline = false
+                let s = AppSettings.shared
+                tv.typingAttributes = [
+                    .font:            s.editorFont(),
+                    .foregroundColor: NSColor.labelColor,
+                    .paragraphStyle:  s.editorParagraphStyle
+                ]
+            }
 
             // Persist using NSKeyedArchiver — preserves all attributes including herodote:// links
             let snapshot = NSAttributedString(attributedString: ts)
@@ -292,15 +455,58 @@ struct RichTextEditor: NSViewRepresentable {
             let delta = max(0, newCount - lastWordCount)
             if delta > 0 { LibraryManager.shared.recordWords(delta) }
             lastWordCount = newCount
+
+            flashMarkers(tv)
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
             parent.state.hasSelection = tv.selectedRange().length > 0
             parent.state.applyFocusHighlight()
+            flashMarkers(tv)
             if AppSettings.shared.writingMode {
                 scrollToCenter(tv)
             }
+        }
+
+        // MARK: Marker visibility
+        // Markers in the caret's paragraph brighten while editing, then fade back
+        // to their dim permanent color ~300 ms later. Temporary attributes only —
+        // zero undo or persistence impact.
+
+        private func flashMarkers(_ tv: NSTextView) {
+            guard !AppSettings.shared.writingMode else { return } // writing mode owns temporary colors
+            showMarkers(tv)
+            markerFadeTask?.cancel()
+            markerFadeTask = Task { @MainActor [weak self, weak tv] in
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled, let self, let tv else { return }
+                self.hideMarkers(tv)
+            }
+        }
+
+        private func showMarkers(_ tv: NSTextView) {
+            guard let lm = tv.layoutManager, let ts = tv.textStorage, ts.length > 0 else { return }
+            hideMarkers(tv)
+            let para = (ts.string as NSString).paragraphRange(for: tv.selectedRange())
+            ts.enumerateAttribute(.herodoteMD, in: para) { value, r, _ in
+                guard (value as? String) == MarkdownHighlighter.Tag.marker.rawValue else { return }
+                lm.addTemporaryAttribute(.foregroundColor,
+                                         value: NSColor.secondaryLabelColor,
+                                         forCharacterRange: r)
+            }
+            lastMarkerParagraph = para
+        }
+
+        private func hideMarkers(_ tv: NSTextView) {
+            guard let lm = tv.layoutManager, let ts = tv.textStorage else { return }
+            if let prev = lastMarkerParagraph {
+                let clamped = NSIntersectionRange(prev, NSRange(location: 0, length: ts.length))
+                if clamped.length > 0 {
+                    lm.removeTemporaryAttribute(.foregroundColor, forCharacterRange: clamped)
+                }
+            }
+            lastMarkerParagraph = nil
         }
 
         // Typewriter mode: keep the cursor line vertically centered in the scroll view.

@@ -10,6 +10,7 @@ struct SheetInspector: View {
 
     var body: some View {
         List {
+            outlineSection
             statsSection
             progressSection
             keywordsSection
@@ -19,6 +20,33 @@ struct SheetInspector: View {
         }
         .listStyle(.inset)
         .inspectorColumnWidth(min: 220, ideal: 260, max: 340)
+    }
+
+    // MARK: Outline (from Markdown headings)
+
+    private var outlineSection: some View {
+        let headings = MarkdownHighlighter.headings(in: sheet.plainText)
+        return Section {
+            if headings.isEmpty {
+                Text("Aucun titre — commencez une ligne par « # »")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(headings.enumerated()), id: \.offset) { _, heading in
+                    Button {
+                        state.scrollTo(range: NSRange(location: heading.range.location, length: 0))
+                    } label: {
+                        Text(heading.title)
+                            .font(heading.level == 1 ? .callout.weight(.semibold) : .callout)
+                            .lineLimit(1)
+                            .padding(.leading, CGFloat(heading.level - 1) * 12)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        } header: {
+            Label("Plan", systemImage: "list.bullet.indent")
+        }
     }
 
     // MARK: Stats

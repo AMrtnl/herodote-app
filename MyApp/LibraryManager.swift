@@ -143,6 +143,32 @@ import SwiftUI
         }
     }
 
+    /// Toggle a sheet's "material" flag (documentation sheets, excluded from stats and export).
+    func toggleMaterial(_ sheetID: UUID) {
+        guard var s = sheet(id: sheetID) else { return }
+        s.isMaterial.toggle()
+        updateSheet(s)
+    }
+
+    /// Every group at any nesting depth, depth-first.
+    func allGroupsFlat() -> [WritingGroup] {
+        var out: [WritingGroup] = []
+        func walk(_ g: WritingGroup) { out.append(g); g.groups.forEach(walk) }
+        groups.forEach(walk)
+        return out
+    }
+
+    /// (sheet, owning group) pairs across the whole library.
+    func sheetsWithGroups() -> [(sheet: WritingSheet, group: WritingGroup)] {
+        var out: [(sheet: WritingSheet, group: WritingGroup)] = []
+        func walk(_ g: WritingGroup) {
+            for s in g.sheets { out.append((sheet: s, group: g)) }
+            g.groups.forEach(walk)
+        }
+        groups.forEach(walk)
+        return out
+    }
+
     func moveSheets(in groupID: UUID, from offsets: IndexSet, to destination: Int) {
         if let idx = groups.firstIndex(where: { $0.id == groupID }) {
             groups[idx].sheets.move(fromOffsets: offsets, toOffset: destination)

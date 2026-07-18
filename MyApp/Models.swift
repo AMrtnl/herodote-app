@@ -17,6 +17,24 @@ struct WritingComment: Identifiable, Codable, Hashable {
     var nsRange: NSRange { NSRange(location: rangeLocation, length: rangeLength) }
 }
 
+// MARK: - SheetVersion
+// A saved snapshot of a sheet's content, restorable from the history timeline.
+
+struct SheetVersion: Identifiable, Codable, Hashable {
+    var id = UUID()
+    var createdAt: Date = .now
+    var contentData: Data = Data()
+    var wordCount: Int = 0
+
+    var attributedString: NSAttributedString {
+        guard !contentData.isEmpty else { return NSAttributedString() }
+        return (try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSAttributedString.self, from: contentData))
+            ?? NSAttributedString()
+    }
+
+    var plainText: String { attributedString.string }
+}
+
 // MARK: - WritingSheet
 
 struct WritingSheet: Identifiable, Codable {
@@ -29,10 +47,34 @@ struct WritingSheet: Identifiable, Codable {
     var wordGoal: Int? = nil
     var createdAt: Date = .now
     var modifiedAt: Date = .now
+    var versions: [SheetVersion] = []
+    var isMaterial: Bool = false
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, contentData, comments, keywords, authorNotes,
+             wordGoal, createdAt, modifiedAt, versions, isMaterial
+    }
 
     init(title: String, seedText: String = "") {
         self.title = title
         if !seedText.isEmpty { self.contentData = makeContentData(seedText) }
+    }
+
+    // Migration-safe decoder: files written before versions/isMaterial existed must
+    // keep decoding — WritingGroup's decoder silently drops sheet arrays that throw.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id          = (try? c.decode(UUID.self,             forKey: .id))          ?? UUID()
+        title       = (try? c.decode(String.self,           forKey: .title))       ?? "Feuille"
+        contentData = (try? c.decode(Data.self,             forKey: .contentData)) ?? Data()
+        comments    = (try? c.decode([WritingComment].self, forKey: .comments))    ?? []
+        keywords    = (try? c.decode([String].self,         forKey: .keywords))    ?? []
+        authorNotes = (try? c.decode(String.self,           forKey: .authorNotes)) ?? ""
+        wordGoal    = try? c.decodeIfPresent(Int.self,      forKey: .wordGoal)
+        createdAt   = (try? c.decode(Date.self,             forKey: .createdAt))   ?? .now
+        modifiedAt  = (try? c.decode(Date.self,             forKey: .modifiedAt))  ?? .now
+        versions    = (try? c.decodeIfPresent([SheetVersion].self, forKey: .versions)) ?? []
+        isMaterial  = (try? c.decodeIfPresent(Bool.self,    forKey: .isMaterial))  ?? false
     }
 
     var attributedString: NSAttributedString {
@@ -48,7 +90,7 @@ struct WritingSheet: Identifiable, Codable {
     }
 
     var plainText: String { attributedString.string }
-    var wordCount: Int { plainText.split { $0.isWhitespace || $0.isNewline }.filter { !$0.isEmpty }.count }
+    var wordCount: Int { countWords(in: plainText) }
     var characterCount: Int { plainText.count }
     var paragraphCount: Int {
         plainText.components(separatedBy: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count
@@ -116,7 +158,8 @@ struct WritingGroup: Identifiable, Codable {
         sheets + groups.flatMap { $0.allSheets }
     }
 
-    var totalWordCount: Int { allSheets.reduce(0) { $0 + $1.wordCount } }
+    // Material (documentation) sheets are excluded from stats, like Ulysses.
+    var totalWordCount: Int { allSheets.filter { !$0.isMaterial }.reduce(0) { $0 + $1.wordCount } }
 
     func sheet(id: UUID) -> WritingSheet? { allSheets.first { $0.id == id } }
     func contains(sheetID: UUID) -> Bool  { allSheets.contains { $0.id == sheetID } }
@@ -206,6 +249,15 @@ struct WritingGroup: Identifiable, Codable {
     }
 }
 
+// MARK: - Word counting
+
+/// Word count that ignores pure Markdown marker tokens ("#", "**", "~~", …).
+func countWords(in text: String) -> Int {
+    text.split { $0.isWhitespace || $0.isNewline }
+        .filter { !$0.isEmpty && !$0.allSatisfy { "*#~".contains($0) } }
+        .count
+}
+
 // MARK: - NSAttributedString helpers
 
 func makeContentData(_ text: String) -> Data {
@@ -226,4 +278,7 @@ func encodeAttributedString(_ as_: NSAttributedString) -> Data {
 
 extension NSAttributedString.Key {
     static let herodoteLink = NSAttributedString.Key("HerodoteLinkTarget")
+    /// Marks ranges styled by MarkdownHighlighter so its reset phase only ever
+    /// undoes its own work (values are MarkdownHighlighter.Tag raw values).
+    static let herodoteMD = NSAttributedString.Key("HerodoteMarkdown")
 }
