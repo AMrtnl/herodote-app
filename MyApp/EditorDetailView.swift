@@ -14,6 +14,7 @@ struct EditorDetailView: View {
     @State private var showVersions   = false
     @State private var showExport     = false
     @State private var showSavedFlash = false
+    @State private var savedFlashTask: Task<Void, Never>?
     @State private var commentDraft   = ""
 
     var body: some View {
@@ -98,7 +99,7 @@ struct EditorDetailView: View {
             }
         }
         .sheet(isPresented: $showVersions) {
-            VersionHistorySheet(sheet: $sheet, onRestore: { restore($0) }, onClose: { showVersions = false })
+            VersionHistorySheet(sheet: sheet, onRestore: { restore($0) }, onClose: { showVersions = false })
         }
         .sheet(isPresented: $showExport) {
             ExportSheet(sheets: [sheet], title: sheet.title) { showExport = false }
@@ -133,8 +134,10 @@ struct EditorDetailView: View {
 
     private func flashSaved() {
         showSavedFlash = true
-        Task { @MainActor in
+        savedFlashTask?.cancel()
+        savedFlashTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(1.2))
+            guard !Task.isCancelled else { return }
             showSavedFlash = false
         }
     }

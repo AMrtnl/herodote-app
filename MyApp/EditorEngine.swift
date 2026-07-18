@@ -14,6 +14,9 @@ import SwiftUI
     @ObservationIgnored var requestExport:      (() -> Void)?
     @ObservationIgnored var requestLink:        (() -> Void)?
 
+    // Version restore must not credit the words-written heatmap
+    @ObservationIgnored var suppressNextWordCredit = false
+
     func refreshStats() {
         guard let tv = textView else { return }
         wordCount = countWords(in: tv.string)
@@ -47,39 +50,40 @@ import SwiftUI
             value: cur == 0 ? NSUnderlineStyle.single.rawValue : 0, range: r)
     }
 
-    /// Insert, replace or toggle a "#…# " prefix on the current paragraph.
+    /// Insert, replace or toggle a "#…# " prefix on every selected paragraph.
     func heading(_ level: Int) {
         guard let tv = textView else { return }
         let ns = tv.string as NSString
-        let para = ns.paragraphRange(for: tv.selectedRange())
-        let (hashes, prefixLen) = headingPrefix(ns, para)
+        let paragraphs = MarkdownHighlighter.paragraphRanges(in: ns, within: tv.selectedRange())
+        guard !paragraphs.isEmpty else { return }
         let target = max(1, min(level, 3))
-        let existing = NSRange(location: para.location, length: prefixLen)
-        if hashes == target && prefixLen > 0 {
-            replaceUndoSafe(tv, range: existing, with: "")
-        } else {
-            replaceUndoSafe(tv, range: existing, with: String(repeating: "#", count: target) + " ")
+        let newPrefix = String(repeating: "#", count: target) + " "
+        // Toggle off only when every selected paragraph already has the target level
+        let allAtTarget = paragraphs.allSatisfy {
+            MarkdownHighlighter.headingPrefix(ns, paragraph: $0)?.level == target
+        }
+        // Back-to-front so earlier ranges stay valid as the string changes
+        for para in paragraphs.reversed() {
+            let prefixLen = MarkdownHighlighter.headingPrefix(ns, paragraph: para)?.prefixLen ?? 0
+            let existing = NSRange(location: para.location, length: prefixLen)
+            replaceUndoSafe(tv, range: existing, with: allAtTarget ? "" : newPrefix)
         }
     }
 
     func bodyStyle() {
         guard let tv = textView else { return }
         let ns = tv.string as NSString
-        let para = ns.paragraphRange(for: tv.selectedRange())
-        let (_, prefixLen) = headingPrefix(ns, para)
-        if prefixLen > 0 {
-            replaceUndoSafe(tv, range: NSRange(location: para.location, length: prefixLen), with: "")
+        let paragraphs = MarkdownHighlighter.paragraphRanges(in: ns, within: tv.selectedRange())
+        for para in paragraphs.reversed() {
+            if let prefix = MarkdownHighlighter.headingPrefix(ns, paragraph: para) {
+                replaceUndoSafe(tv, range: NSRange(location: para.location, length: prefix.prefixLen), with: "")
+            }
         }
-        // Reset manual/legacy formatting on the paragraph, then let the
-        // highlighter re-derive whatever the remaining markers justify.
+        // Reset manual/legacy formatting, then let the highlighter re-derive
+        // whatever the remaining markers justify.
         guard let ts = tv.textStorage else { return }
-        let settings = AppSettings.shared
         let current = (tv.string as NSString).paragraphRange(for: tv.selectedRange())
-        ts.addAttributes([
-            .font:            settings.editorFont(),
-            .foregroundColor: NSColor.labelColor,
-            .paragraphStyle:  settings.editorParagraphStyle
-        ], range: current)
+        ts.addAttributes(AppSettings.shared.defaultEditorAttributes, range: current)
         ts.removeAttribute(.herodoteMD, range: current)
         MarkdownHighlighter.highlight(ts, in: current)
         tv.didChangeText()
@@ -117,15 +121,11 @@ import SwiftUI
         guard let tv = textView, let ts = tv.textStorage else { return }
         let full = NSRange(location: 0, length: ts.length)
         guard tv.shouldChangeText(in: full, replacementString: content.string) else { return }
+        suppressNextWordCredit = true
         ts.replaceCharacters(in: full, with: content)
         tv.didChangeText()
         tv.setSelectedRange(NSRange(location: 0, length: 0))
-        let settings = AppSettings.shared
-        tv.typingAttributes = [
-            .font:            settings.editorFont(),
-            .foregroundColor: NSColor.labelColor,
-            .paragraphStyle:  settings.editorParagraphStyle
-        ]
+        tv.typingAttributes = AppSettings.shared.defaultEditorAttributes
         refreshStats()
     }
 
@@ -184,10 +184,18 @@ import SwiftUI
 
     private func toggleMarkerPair(_ marker: String) {
         guard let tv = textView else { return }
+        let ns = tv.string as NSString
         let mLen = (marker as NSString).length
         var sel = tv.selectedRange()
 
         if sel.length == 0 {
+            // Toggle-off gesture: caret sitting right before a closing marker
+            // (⌘B → type → ⌘B) steps past it instead of inserting a new pair
+            if sel.location + mLen <= ns.length,
+               ns.substring(with: NSRange(location: sel.location, length: mLen)) == marker {
+                tv.setSelectedRange(NSRange(location: sel.location + mLen, length: 0))
+                return
+            }
             // Insert the pair, caret between the markers — typed text lands inside
             if replaceUndoSafe(tv, range: sel, with: marker + marker) {
                 tv.setSelectedRange(NSRange(location: sel.location + mLen, length: 0))
@@ -195,7 +203,6 @@ import SwiftUI
             return
         }
 
-        let ns = tv.string as NSString
         // Markers must hug non-whitespace, so trim the selection edges
         while sel.length > 0, Self.isWhitespace(ns.character(at: sel.location)) {
             sel.location += 1; sel.length -= 1
@@ -205,7 +212,7 @@ import SwiftUI
         }
         guard sel.length > 0 else { return }
 
-        // Unwrap when the selection is already exactly wrapped
+        // Unwrap when the markers sit just outside the selection…
         let lead = NSRange(location: sel.location - mLen, length: mLen)
         let trail = NSRange(location: NSMaxRange(sel), length: mLen)
         if lead.location >= 0, NSMaxRange(trail) <= ns.length,
@@ -213,6 +220,16 @@ import SwiftUI
             replaceUndoSafe(tv, range: trail, with: "")
             replaceUndoSafe(tv, range: lead, with: "")
             tv.setSelectedRange(NSRange(location: lead.location, length: sel.length))
+            return
+        }
+
+        // …or when the selection includes the markers themselves
+        if sel.length >= 2 * mLen,
+           ns.substring(with: NSRange(location: sel.location, length: mLen)) == marker,
+           ns.substring(with: NSRange(location: NSMaxRange(sel) - mLen, length: mLen)) == marker {
+            replaceUndoSafe(tv, range: NSRange(location: NSMaxRange(sel) - mLen, length: mLen), with: "")
+            replaceUndoSafe(tv, range: NSRange(location: sel.location, length: mLen), with: "")
+            tv.setSelectedRange(NSRange(location: sel.location, length: sel.length - 2 * mLen))
             return
         }
 
@@ -230,19 +247,9 @@ import SwiftUI
         return true
     }
 
-    private func headingPrefix(_ ns: NSString, _ para: NSRange) -> (hashes: Int, prefixLen: Int) {
-        var hashes = 0
-        while para.location + hashes < NSMaxRange(para),
-              ns.character(at: para.location + hashes) == 35 { hashes += 1 }
-        if hashes > 0, para.location + hashes < NSMaxRange(para),
-           ns.character(at: para.location + hashes) == 32 {
-            return (hashes, hashes + 1)
-        }
-        return (0, 0)
-    }
-
     private static func isWhitespace(_ c: unichar) -> Bool {
-        guard let scalar = UnicodeScalar(c) else { return true }
+        // Surrogate halves (emoji, etc.) are content, never whitespace
+        guard let scalar = UnicodeScalar(c) else { return false }
         return CharacterSet.whitespacesAndNewlines.contains(scalar)
     }
 }
@@ -344,11 +351,7 @@ struct RichTextEditor: NSViewRepresentable {
         // Update body typing defaults (affects new text the user types)
         if s.fontName != c.lastFontName || s.fontSize != c.lastFontSize ||
            s.lineSpacing != c.lastLineSpacing || s.paragraphSpacing != c.lastParagraphSpacing {
-            tv.typingAttributes = [
-                .font:            s.editorFont(),
-                .foregroundColor: NSColor.labelColor,
-                .paragraphStyle:  s.editorParagraphStyle
-            ]
+            tv.typingAttributes = s.defaultEditorAttributes
             c.syncSettings(s)
         }
     }
@@ -436,12 +439,7 @@ struct RichTextEditor: NSViewRepresentable {
             if resetTypingAttributesAfterNewline {
                 // Heading style must not leak into the next paragraph
                 resetTypingAttributesAfterNewline = false
-                let s = AppSettings.shared
-                tv.typingAttributes = [
-                    .font:            s.editorFont(),
-                    .foregroundColor: NSColor.labelColor,
-                    .paragraphStyle:  s.editorParagraphStyle
-                ]
+                tv.typingAttributes = AppSettings.shared.defaultEditorAttributes
             }
 
             // Persist using NSKeyedArchiver — preserves all attributes including herodote:// links
@@ -450,10 +448,15 @@ struct RichTextEditor: NSViewRepresentable {
             parent.sheet.modifiedAt = .now
             parent.state.refreshStats()
 
-            // Track words added for heatmap
+            // Track words added for heatmap — but not version restores, and not
+            // material (documentation) sheets, which are excluded from stats
             let newCount = parent.state.wordCount
-            let delta = max(0, newCount - lastWordCount)
-            if delta > 0 { LibraryManager.shared.recordWords(delta) }
+            if parent.state.suppressNextWordCredit {
+                parent.state.suppressNextWordCredit = false
+            } else if !parent.sheet.isMaterial {
+                let delta = max(0, newCount - lastWordCount)
+                if delta > 0 { LibraryManager.shared.recordWords(delta) }
+            }
             lastWordCount = newCount
 
             flashMarkers(tv)
@@ -475,12 +478,19 @@ struct RichTextEditor: NSViewRepresentable {
         // zero undo or persistence impact.
 
         private func flashMarkers(_ tv: NSTextView) {
-            guard !AppSettings.shared.writingMode else { return } // writing mode owns temporary colors
+            guard !AppSettings.shared.writingMode else {
+                // Writing mode owns the temporary-color layer: cancel any pending
+                // fade so it can't strip the focus dim after the mode switch
+                markerFadeTask?.cancel()
+                lastMarkerParagraph = nil
+                return
+            }
             showMarkers(tv)
             markerFadeTask?.cancel()
             markerFadeTask = Task { @MainActor [weak self, weak tv] in
                 try? await Task.sleep(for: .milliseconds(300))
-                guard !Task.isCancelled, let self, let tv else { return }
+                guard !Task.isCancelled, let self, let tv,
+                      !AppSettings.shared.writingMode else { return }
                 self.hideMarkers(tv)
             }
         }
@@ -489,8 +499,7 @@ struct RichTextEditor: NSViewRepresentable {
             guard let lm = tv.layoutManager, let ts = tv.textStorage, ts.length > 0 else { return }
             hideMarkers(tv)
             let para = (ts.string as NSString).paragraphRange(for: tv.selectedRange())
-            ts.enumerateAttribute(.herodoteMD, in: para) { value, r, _ in
-                guard (value as? String) == MarkdownHighlighter.Tag.marker.rawValue else { return }
+            for r in MarkdownHighlighter.markerRanges(in: ts, within: para) {
                 lm.addTemporaryAttribute(.foregroundColor,
                                          value: NSColor.secondaryLabelColor,
                                          forCharacterRange: r)

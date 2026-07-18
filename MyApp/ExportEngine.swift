@@ -28,10 +28,13 @@ enum ExportFormat: String, CaseIterable, Identifiable {
 // One source, many outputs (Ulysses principle). Material sheets are always excluded.
 
 enum ExportEngine {
-    enum ExportError: Error { case generationFailed }
+    enum ExportError: Error { case generationFailed, nothingToExport }
 
     static func export(sheets: [WritingSheet], title: String, format: ExportFormat, to url: URL) throws {
-        let exportSheets = sheets.filter { !$0.isMaterial }
+        // Material sheets are excluded from group exports; an explicitly
+        // exported single sheet is always honored, material or not.
+        let exportSheets = sheets.count == 1 ? sheets : sheets.filter { !$0.isMaterial }
+        guard !exportSheets.isEmpty else { throw ExportError.nothingToExport }
         let includeTitles = exportSheets.count > 1
         switch format {
         case .markdown:
@@ -58,10 +61,15 @@ enum ExportEngine {
     /// characters so the output carries formatting without syntax.
     private static func combined(_ sheets: [WritingSheet], includeTitles: Bool) -> NSAttributedString {
         let out = NSMutableAttributedString()
+        let settings = AppSettings.shared
+        let titleBase = settings.editorFont(size: settings.fontSize + 12)
+        let titleDescriptor = titleBase.fontDescriptor
+            .withSymbolicTraits(titleBase.fontDescriptor.symbolicTraits.union(.bold))
+        let titleFont = NSFont(descriptor: titleDescriptor, size: titleBase.pointSize) ?? titleBase
         for (index, sheet) in sheets.enumerated() {
             if includeTitles {
                 out.append(NSAttributedString(string: "\(sheet.title)\n", attributes: [
-                    .font: NSFont.systemFont(ofSize: 26, weight: .bold),
+                    .font: titleFont,
                     .foregroundColor: NSColor.textColor
                 ]))
             }
@@ -74,10 +82,7 @@ enum ExportEngine {
     static func cleaned(_ source: NSAttributedString) -> NSAttributedString {
         let m = NSMutableAttributedString(attributedString: source)
         MarkdownHighlighter.highlight(m, in: NSRange(location: 0, length: m.length))
-        var markers: [NSRange] = []
-        m.enumerateAttribute(.herodoteMD, in: NSRange(location: 0, length: m.length)) { value, r, _ in
-            if (value as? String) == MarkdownHighlighter.Tag.marker.rawValue { markers.append(r) }
-        }
+        let markers = MarkdownHighlighter.markerRanges(in: m, within: NSRange(location: 0, length: m.length))
         for r in markers.sorted(by: { $0.location > $1.location }) {
             m.deleteCharacters(in: r)
         }
@@ -162,6 +167,8 @@ struct ExportSheet: View {
             do {
                 try ExportEngine.export(sheets: sheets, title: title, format: format, to: url)
                 onClose()
+            } catch ExportEngine.ExportError.nothingToExport {
+                errorMessage = "Rien à exporter — les feuilles marquées comme matériel sont exclues."
             } catch {
                 errorMessage = "L'export \(format.rawValue) a échoué. Essayez un autre format."
             }

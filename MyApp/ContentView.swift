@@ -85,6 +85,7 @@ struct LibraryRootView: View {
                 PaletteOverlay(
                     selectedGroupID: $selectedGroupID,
                     selectedSheetID: $selectedSheetID,
+                    showProfile: $showProfile,
                     showGroupExport: $showGroupExport
                 )
             }

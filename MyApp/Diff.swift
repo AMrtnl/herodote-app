@@ -16,8 +16,8 @@ func wordDiff(old: String, new: String) -> [DiffSegment] {
     var newTokens = tokenizeWords(new)
     // Myers is O(n·d); above ~20k tokens fall back to line granularity
     if oldTokens.count + newTokens.count > 20_000 {
-        oldTokens = old.components(separatedBy: "\n").map { $0 + "\n" }
-        newTokens = new.components(separatedBy: "\n").map { $0 + "\n" }
+        oldTokens = tokenizeLines(old)
+        newTokens = tokenizeLines(new)
     }
 
     let difference = newTokens.difference(from: oldTokens)
@@ -71,11 +71,21 @@ func diffAttributedString(_ segments: [DiffSegment]) -> AttributedString {
 
 // MARK: - Private
 
-/// Tokens keep their trailing whitespace so concatenation reconstructs the text.
+/// Words and whitespace as separate tokens — concatenation reconstructs the
+/// text, and a whitespace-only edit never flags the neighbouring word.
 private func tokenizeWords(_ s: String) -> [String] {
+    tokenize(s, pattern: "\\S+|\\s+")
+}
+
+/// Lines including their own newline; the final line keeps its true ending.
+private func tokenizeLines(_ s: String) -> [String] {
+    tokenize(s, pattern: "[^\\n]*\\n|[^\\n]+")
+}
+
+private func tokenize(_ s: String, pattern: String) -> [String] {
     guard !s.isEmpty else { return [] }
     let ns = s as NSString
-    let regex = try! NSRegularExpression(pattern: "\\S+\\s*|\\s+")
+    let regex = try! NSRegularExpression(pattern: pattern)
     return regex.matches(in: s, range: NSRange(location: 0, length: ns.length))
         .map { ns.substring(with: $0.range) }
 }

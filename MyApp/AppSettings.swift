@@ -43,6 +43,16 @@ import AppKit
         return ps
     }
 
+    /// The baseline attributes for body text — single source of truth for every
+    /// typing-attribute reset and new-content path.
+    var defaultEditorAttributes: [NSAttributedString.Key: Any] {
+        [
+            .font:            editorFont(),
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle:  editorParagraphStyle
+        ]
+    }
+
     // MARK: Persistence
 
     private init() {

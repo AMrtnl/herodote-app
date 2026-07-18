@@ -5,7 +5,7 @@ import SwiftUI
 // against the current text. Restoring auto-snapshots the current text first.
 
 struct VersionHistorySheet: View {
-    @Binding var sheet: WritingSheet
+    let sheet: WritingSheet
     var onRestore: (SheetVersion) -> Void
     var onClose: () -> Void
 

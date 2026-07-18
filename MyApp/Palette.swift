@@ -8,13 +8,6 @@ import AppKit
 struct PendingScroll: Equatable {
     let sheetID: UUID
     let range: NSRange
-    let token: UUID
-
-    init(sheetID: UUID, range: NSRange) {
-        self.sheetID = sheetID
-        self.range = range
-        self.token = UUID()
-    }
 }
 
 // MARK: - PaletteState
@@ -66,6 +59,7 @@ struct PaletteOverlay: View {
     @FocusedValue(\.editorState) private var editorState
     @Binding var selectedGroupID: UUID?
     @Binding var selectedSheetID: UUID?
+    @Binding var showProfile: Bool
     @Binding var showGroupExport: Bool
 
     var body: some View {
@@ -84,11 +78,13 @@ struct PaletteOverlay: View {
         var items: [PaletteItem] = []
         for group in library.allGroupsFlat() {
             items.append(PaletteItem(icon: group.iconName, title: group.title, subtitle: "Groupe") {
+                showProfile = false
                 selectedGroupID = group.id
             })
         }
         for (sheet, group) in library.sheetsWithGroups() {
             items.append(PaletteItem(icon: "doc.text", title: sheet.title, subtitle: group.title) {
+                showProfile = false
                 selectedGroupID = group.id
                 selectedSheetID = sheet.id
             })
@@ -96,6 +92,7 @@ struct PaletteOverlay: View {
                 items.append(PaletteItem(icon: "number",
                                          title: heading.title,
                                          subtitle: "\(sheet.title) › Titre \(heading.level)") {
+                    showProfile = false
                     selectedGroupID = group.id
                     selectedSheetID = sheet.id
                     PaletteState.shared.pendingScroll = PendingScroll(sheetID: sheet.id, range: heading.range)
@@ -155,26 +152,35 @@ struct PaletteView: View {
 
     @State private var query = ""
     @State private var selection = 0
+    @State private var visible: [PaletteItem] = []
     @FocusState private var fieldFocused: Bool
 
     private static let maxVisible = 40
 
-    private var filtered: [PaletteItem] {
+    // Filter once per query change, not once per body evaluation
+    private func refilter() {
         let q = query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return items }
-        let ranked = items.compactMap { item -> (PaletteItem, Int)? in
+        guard !q.isEmpty else {
+            visible = Array(items.prefix(Self.maxVisible))
+            return
+        }
+        let lowered = q.lowercased()
+        let ranked = items.enumerated().compactMap { index, item -> (item: PaletteItem, score: Int, index: Int)? in
             if item.title.localizedStandardContains(q) {
-                return (item, item.title.lowercased().hasPrefix(q.lowercased()) ? 0 : 1)
+                return (item, item.title.lowercased().hasPrefix(lowered) ? 0 : 1, index)
             }
             if let sub = item.subtitle, sub.localizedStandardContains(q) {
-                return (item, 2)
+                return (item, 2, index)
             }
             return nil
         }
-        return ranked.sorted { $0.1 < $1.1 }.map { $0.0 }
+        visible = Array(
+            ranked
+                .sorted { ($0.score, $0.index) < ($1.score, $1.index) }
+                .map { $0.item }
+                .prefix(Self.maxVisible)
+        )
     }
-
-    private var visible: [PaletteItem] { Array(filtered.prefix(Self.maxVisible)) }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -228,8 +234,14 @@ struct PaletteView: View {
             .frame(width: 560)
             .glassEffect(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
-        .onAppear { fieldFocused = true }
-        .onChange(of: query) { selection = 0 }
+        .onAppear {
+            fieldFocused = true
+            refilter()
+        }
+        .onChange(of: query) {
+            selection = 0
+            refilter()
+        }
     }
 
     private func row(_ item: PaletteItem, highlighted: Bool) -> some View {

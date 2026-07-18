@@ -160,13 +160,7 @@ import SwiftUI
 
     /// (sheet, owning group) pairs across the whole library.
     func sheetsWithGroups() -> [(sheet: WritingSheet, group: WritingGroup)] {
-        var out: [(sheet: WritingSheet, group: WritingGroup)] = []
-        func walk(_ g: WritingGroup) {
-            for s in g.sheets { out.append((sheet: s, group: g)) }
-            g.groups.forEach(walk)
-        }
-        groups.forEach(walk)
-        return out
+        allGroupsFlat().flatMap { g in g.sheets.map { (sheet: $0, group: g) } }
     }
 
     func moveSheets(in groupID: UUID, from offsets: IndexSet, to destination: Int) {

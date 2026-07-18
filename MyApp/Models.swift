@@ -26,12 +26,24 @@ struct SheetVersion: Identifiable, Codable, Hashable {
     var contentData: Data = Data()
     var wordCount: Int = 0
 
-    var attributedString: NSAttributedString {
-        guard !contentData.isEmpty else { return NSAttributedString() }
-        return (try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSAttributedString.self, from: contentData))
-            ?? NSAttributedString()
+    enum CodingKeys: String, CodingKey { case id, createdAt, contentData, wordCount }
+
+    init(contentData: Data, wordCount: Int) {
+        self.contentData = contentData
+        self.wordCount = wordCount
     }
 
+    // Migration-safe: one malformed entry must not throw and wipe the whole
+    // versions array (the array is decoded with try? at the WritingSheet level).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id          = (try? c.decode(UUID.self, forKey: .id))          ?? UUID()
+        createdAt   = (try? c.decode(Date.self, forKey: .createdAt))   ?? .now
+        contentData = (try? c.decode(Data.self, forKey: .contentData)) ?? Data()
+        wordCount   = (try? c.decode(Int.self,  forKey: .wordCount))   ?? 0
+    }
+
+    var attributedString: NSAttributedString { decodeAttributedString(contentData) }
     var plainText: String { attributedString.string }
 }
 
@@ -77,17 +89,7 @@ struct WritingSheet: Identifiable, Codable {
         isMaterial  = (try? c.decodeIfPresent(Bool.self,    forKey: .isMaterial))  ?? false
     }
 
-    var attributedString: NSAttributedString {
-        guard !contentData.isEmpty else { return NSAttributedString() }
-        if let as_ = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSAttributedString.self, from: contentData) {
-            return as_
-        }
-        return (try? NSAttributedString(
-            data: contentData,
-            options: [.documentType: NSAttributedString.DocumentType.rtf],
-            documentAttributes: nil
-        )) ?? NSAttributedString()
-    }
+    var attributedString: NSAttributedString { decodeAttributedString(contentData) }
 
     var plainText: String { attributedString.string }
     var wordCount: Int { countWords(in: plainText) }
@@ -261,13 +263,22 @@ func countWords(in text: String) -> Int {
 // MARK: - NSAttributedString helpers
 
 func makeContentData(_ text: String) -> Data {
-    let s = AppSettings.shared
-    let as_ = NSAttributedString(string: text, attributes: [
-        .font:            s.editorFont(),
-        .foregroundColor: NSColor.labelColor,
-        .paragraphStyle:  s.editorParagraphStyle
-    ])
-    return encodeAttributedString(as_)
+    encodeAttributedString(NSAttributedString(string: text,
+                                              attributes: AppSettings.shared.defaultEditorAttributes))
+}
+
+/// Keyed-archive decode with the legacy RTF fallback — the single decode path
+/// for sheet content and version snapshots.
+func decodeAttributedString(_ data: Data) -> NSAttributedString {
+    guard !data.isEmpty else { return NSAttributedString() }
+    if let decoded = try? NSKeyedUnarchiver.unarchivedObject(ofClass: NSAttributedString.self, from: data) {
+        return decoded
+    }
+    return (try? NSAttributedString(
+        data: data,
+        options: [.documentType: NSAttributedString.DocumentType.rtf],
+        documentAttributes: nil
+    )) ?? NSAttributedString()
 }
 
 func encodeAttributedString(_ as_: NSAttributedString) -> Data {

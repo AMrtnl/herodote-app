@@ -25,7 +25,10 @@ struct SheetInspector: View {
     // MARK: Outline (from Markdown headings)
 
     private var outlineSection: some View {
-        let headings = MarkdownHighlighter.headings(in: sheet.plainText)
+        // Prefer the live editor text — sheet.plainText decodes the whole
+        // archive on every access, too costly per keystroke with the inspector open
+        let text = state.textView?.string ?? sheet.plainText
+        let headings = MarkdownHighlighter.headings(in: text)
         return Section {
             if headings.isEmpty {
                 Text("Aucun titre — commencez une ligne par « # »")

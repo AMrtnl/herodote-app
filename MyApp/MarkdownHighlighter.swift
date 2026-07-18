@@ -70,17 +70,44 @@ enum MarkdownHighlighter {
         guard ns.length > 0 else { return [] }
         var out: [Heading] = []
         forEachParagraph(in: ns, within: NSRange(location: 0, length: ns.length)) { para in
-            guard para.length > 1 else { return }
-            var hashes = 0
-            while hashes < para.length, ns.character(at: para.location + hashes) == hashChar { hashes += 1 }
-            guard (1...3).contains(hashes),
-                  hashes < para.length,
-                  ns.character(at: para.location + hashes) == spaceChar,
-                  para.length > hashes + 1 else { return }
-            let title = ns.substring(with: NSRange(location: para.location + hashes + 1,
-                                                   length: para.length - hashes - 1))
+            guard let prefix = headingPrefix(ns, paragraph: para),
+                  prefix.level <= 3,
+                  para.length > prefix.prefixLen else { return }
+            let title = ns.substring(with: NSRange(location: para.location + prefix.prefixLen,
+                                                   length: para.length - prefix.prefixLen))
                 .trimmingCharacters(in: .whitespaces)
-            if !title.isEmpty { out.append(Heading(level: hashes, title: title, range: para)) }
+            if !title.isEmpty { out.append(Heading(level: prefix.level, title: title, range: para)) }
+        }
+        return out
+    }
+
+    /// Leading "#…# " prefix of a paragraph. Levels 1–6 are recognized so the
+    /// editing commands can replace/strip any prefix; styling only uses 1–3.
+    static func headingPrefix(_ text: NSString, paragraph: NSRange) -> (level: Int, prefixLen: Int)? {
+        var hashes = 0
+        while hashes < paragraph.length,
+              text.character(at: paragraph.location + hashes) == hashChar { hashes += 1 }
+        guard (1...6).contains(hashes),
+              hashes < paragraph.length,
+              text.character(at: paragraph.location + hashes) == spaceChar else { return nil }
+        return (hashes, hashes + 1)
+    }
+
+    /// Content ranges (no terminator) of every paragraph touching `range`.
+    /// A caret in an empty final paragraph still yields that paragraph.
+    static func paragraphRanges(in text: NSString, within range: NSRange) -> [NSRange] {
+        let clamped = clamp(range, to: text.length)
+        var out: [NSRange] = []
+        forEachParagraph(in: text, within: text.paragraphRange(for: clamped)) { out.append($0) }
+        if out.isEmpty { out.append(NSRange(location: clamped.location, length: 0)) }
+        return out
+    }
+
+    /// Ranges tagged as markers by a previous highlight pass.
+    static func markerRanges(in storage: NSAttributedString, within range: NSRange) -> [NSRange] {
+        var out: [NSRange] = []
+        storage.enumerateAttribute(.herodoteMD, in: range) { value, r, _ in
+            if (value as? String) == Tag.marker.rawValue { out.append(r) }
         }
         return out
     }
@@ -121,19 +148,16 @@ enum MarkdownHighlighter {
         let localFull = NSRange(location: 0, length: paragraphNS.length)
 
         // Heading prefix "# ", "## ", "### " at line start
-        var hashes = 0
-        while hashes < paragraphNS.length, paragraphNS.character(at: hashes) == hashChar { hashes += 1 }
-        if (1...3).contains(hashes),
-           hashes < paragraphNS.length,
-           paragraphNS.character(at: hashes) == spaceChar,
-           paragraphNS.length > hashes + 1 {
-            let tag: Tag = hashes == 1 ? .h1 : (hashes == 2 ? .h2 : .h3)
-            let marker = NSRange(location: 0, length: hashes + 1)
-            let content = NSRange(location: hashes + 1, length: paragraphNS.length - hashes - 1)
+        if let prefix = headingPrefix(paragraphNS, paragraph: localFull),
+           prefix.level <= 3,
+           paragraphNS.length > prefix.prefixLen {
+            let tag: Tag = prefix.level == 1 ? .h1 : (prefix.level == 2 ? .h2 : .h3)
+            let marker = NSRange(location: 0, length: prefix.prefixLen)
+            let content = NSRange(location: prefix.prefixLen, length: paragraphNS.length - prefix.prefixLen)
             spans.append(Span(markerRanges: [shift(marker, by: para.location)],
                               contentRange: shift(content, by: para.location),
                               tag: tag))
-            occupied.insert(integersIn: 0..<(hashes + 1))
+            occupied.insert(integersIn: 0..<prefix.prefixLen)
         }
 
         // Inline spans. Occupied indices stop marker characters from being reused
