@@ -30,9 +30,11 @@ nonisolated enum PageRenderer {
 
     // MARK: Templates
 
-    static func drawTemplate(_ template: PageTemplate, paper: PaperStyle, size: CGSize, in ctx: CGContext) {
+    /// `lineScale` thickens rules for small previews, where 0.6 pt lines would vanish.
+    static func drawTemplate(_ template: PageTemplate, paper: PaperStyle, size: CGSize, in ctx: CGContext,
+                             lineScale: CGFloat = 1) {
         let w = size.width, h = size.height
-        let thin: CGFloat = 0.6, strong: CGFloat = 0.9
+        let thin: CGFloat = 0.6 * lineScale, strong: CGFloat = 0.9 * lineScale
         ctx.saveGState()
         ctx.setLineCap(.butt)
 
@@ -92,7 +94,7 @@ nonisolated enum PageRenderer {
 
         case .dots:
             let step = 5 * mm
-            let radius: CGFloat = 0.75
+            let radius: CGFloat = 0.75 * lineScale
             ctx.setFillColor(paper.line.alpha(min(1, paper.line.a * 1.7)).cgColor)
             var y = (h.truncatingRemainder(dividingBy: step)) / 2
             while y <= h {
@@ -153,7 +155,7 @@ nonisolated enum PageRenderer {
                 staves.move(to: CGPoint(x: w - side, y: top)); staves.addLine(to: CGPoint(x: w - side, y: top + gap * 4))
                 top += staffSpacing
             }
-            stroke(staves, color: paper.strongLine, width: 0.7, ctx: ctx)
+            stroke(staves, color: paper.strongLine, width: 0.7 * lineScale, ctx: ctx)
         }
         ctx.restoreGState()
     }

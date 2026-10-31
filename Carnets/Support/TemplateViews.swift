@@ -9,10 +9,17 @@ enum TemplatePreviewCache {
     static func image(_ template: PageTemplate, paper: PaperStyle, landscape: Bool) -> UIImage {
         let key = "\(template.rawValue)-\(paper.rawValue)-\(landscape)"
         if let cached = images[key] { return cached }
-        let page = NotebookPage(size: PageFormat.a4.size(landscape: landscape),
-                                background: .template(template), paper: paper)
-        let files = NotebookFiles(directory: FileManager.default.temporaryDirectory)
-        let image = PageRenderer.renderBackground(page: page, files: files, region: page.bounds, scale: 0.5)
+        let size = PageFormat.a4.size(landscape: landscape)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 0.5
+        format.opaque = true
+        // Previews are shown ~95 pt wide: thicker rules keep the pattern readable.
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            let ctx = context.cgContext
+            ctx.setFillColor(paper.fill.cgColor)
+            ctx.fill(CGRect(origin: .zero, size: size))
+            PageRenderer.drawTemplate(template, paper: paper, size: size, in: ctx, lineScale: 3.2)
+        }
         images[key] = image
         return image
     }
