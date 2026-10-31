@@ -426,7 +426,7 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
         let tool = configuration.tool
         Task { [weak self] in
             guard let self else { return }
-            if tool != .hand { self.select(nil) }
+            if tool != .hand { self.selectElement(nil) }
             if tool != .lasso, !self.canvasView.selection.isEmpty { self.canvasView.selection = [] }
         }
     }
@@ -780,7 +780,7 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
             return true
         }
         if let hit = elementHit(at: canvasPoint(start)), let location = locateElement(hit) {
-            select(hit)
+            selectElement(hit)
             let page = pages[location.pageIndex]
             drag = ElementDrag(pageIndex: location.pageIndex, elementID: hit, mode: .move,
                                original: page.elements[location.elementIndex].frame,
@@ -812,7 +812,7 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
         return nil
     }
 
-    private func select(_ id: UUID?) {
+    private func selectElement(_ id: UUID?) {
         if model.selectedElementID != id { model.selectedElementID = id }
         refreshSelection()
     }
@@ -855,7 +855,7 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
         let point = canvasPoint(g.location(in: canvasView))
         switch model.tool {
         case .hand:
-            select(elementHit(at: point))
+            selectElement(elementHit(at: point))
         case .text:
             if let hit = elementHit(at: point), let location = locateElement(hit),
                pages[location.pageIndex].elements[location.elementIndex].kind == .text {
@@ -872,7 +872,7 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
         guard g.state == .ended else { return }
         let point = canvasPoint(g.location(in: canvasView))
         guard let hit = elementHit(at: point), let location = locateElement(hit) else { return }
-        select(hit)
+        selectElement(hit)
         if pages[location.pageIndex].elements[location.elementIndex].kind == .text {
             requestTextEdit(hit)
         }
@@ -983,7 +983,7 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
         setElements(elements, previous: previous, pageID: request.pageID, actionName: "Texte")
         if !trimmed.isEmpty {
             model.tool = .hand
-            select(element.id)
+            selectElement(element.id)
         }
     }
 
@@ -992,7 +992,7 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
         let page = pages[location.pageIndex]
         var elements = page.elements
         elements.remove(at: location.elementIndex)
-        select(nil)
+        selectElement(nil)
         setElements(elements, previous: page.elements, pageID: page.id, actionName: "Suppression")
     }
 
@@ -1006,7 +1006,7 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
         var elements = page.elements
         elements.append(copy)
         setElements(elements, previous: page.elements, pageID: page.id, actionName: "Duplication")
-        select(copy.id)
+        selectElement(copy.id)
     }
 
     func bringSelectedElementToFront() {
@@ -1061,7 +1061,7 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
             elements.append(element)
             self.setElements(elements, previous: page.elements, pageID: page.id, actionName: "Image")
             self.model.tool = .hand
-            self.select(element.id)
+            self.selectElement(element.id)
         }
     }
 

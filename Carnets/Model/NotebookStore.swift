@@ -253,7 +253,7 @@ import PencilKit
             }
         }
         let files = self.files(for: id)
-        ioQueue.async {
+        ioQueue.async { [drawingNames, assetNames] in
             let fm = FileManager.default
             for url in (try? fm.contentsOfDirectory(at: files.drawingsDirectory, includingPropertiesForKeys: nil)) ?? []
             where !drawingNames.contains(url.lastPathComponent) {
