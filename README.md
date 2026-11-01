@@ -43,6 +43,17 @@ Coffre/
 
 Existing handwritten notebooks are moved into the vault automatically the first time the new version runs.
 
+### Coming from GoodNotes (keep both)
+
+Your GoodNotes notebooks can live in Carnets alongside native ones, and you can keep using GoodNotes:
+
+- **Import**: in GoodNotes, choose Share › Export › **PDF**; a folder exports as a ZIP. In Carnets, open "Importer depuis GoodNotes…" and pick PDFs, ZIP archives or whole folders. GoodNotes folders are recreated (nested folders appear as "Cours › Philosophie"), and PDFs exported by GoodNotes are detected from their metadata.
+- **Searchable handwriting**: GoodNotes flattens handwriting into the PDF, so Carnets reads it with on-device text recognition (Vision). It can then be found in search, and it appears in the notebook's note in the vault.
+- **Update in place**: keep writing in GoodNotes, export again, and import with "Mettre à jour" (or use Infos › "Mettre à jour depuis un export plus récent…"). The pages are replaced, and the ink, text boxes, photos and bookmarks you added in Carnets stay on the same page numbers.
+- **Back to GoodNotes**: Infos › "Envoyer vers GoodNotes (PDF)" exports the notebook with all its writing, including what you added in Carnets. "Partager le PDF d'origine" returns the original export.
+- **Manage many notebooks**: a "Importés de GoodNotes" section, a GoodNotes badge on covers, and multi-selection to move, favourite, **merge** (in display order, originals kept), export or delete several notebooks at once.
+- `.goodnotes` files use GoodNotes' own format, which can't be read reliably; the import explains how to export them as PDF instead.
+
 ### Handwriting features (Carnets manuscrits)
 
 **Library**

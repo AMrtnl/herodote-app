@@ -68,6 +68,17 @@ struct NotebookCoverView: View {
             }
         }
         .shadow(color: .black.opacity(0.22), radius: 6, x: 0, y: 4)
+        .overlay(alignment: .bottomLeading) {
+            if notebook.origin == .goodNotes {
+                Text("GoodNotes")
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(6)
+                    .accessibilityLabel("Importé de GoodNotes")
+            }
+        }
     }
 }
 

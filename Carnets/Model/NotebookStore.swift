@@ -99,18 +99,24 @@ import PencilKit
     }
 
     /// Imports a PDF as a new notebook (pages keep the PDF as background, ready to annotate).
-    func importPDF(from url: URL, folderID: UUID?) async throws -> Notebook {
+    /// PDFs exported from GoodNotes are recognised and marked as such.
+    func importPDF(from url: URL, title: String? = nil, folderID: UUID?) async throws -> Notebook {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
 
-        var notebook = Notebook(title: url.deletingPathExtension().lastPathComponent, cover: nil,
+        var notebook = Notebook(title: title ?? url.deletingPathExtension().lastPathComponent, cover: nil,
                                 template: .blank, paper: .white, format: .a4, landscape: false,
                                 folderID: folderID)
         let files = self.files(for: notebook.id)
         do {
-            notebook.pages = try await Task.detached(priority: .userInitiated) {
-                try Importer.importPDF(from: url, into: files)
+            let result = try await Task.detached(priority: .userInitiated) { () -> ([NotebookPage], Bool) in
+                let pages = try Importer.importPDF(from: url, into: files)
+                return (pages, GoodNotesImporter.isGoodNotesPDF(url))
             }.value
+            notebook.pages = result.0
+            notebook.source = NotebookSource(origin: result.1 ? .goodNotes : .pdf,
+                                             originalName: url.lastPathComponent,
+                                             originalFile: Self.pdfFile(of: result.0))
         } catch {
             try? FileManager.default.removeItem(at: files.directory)
             throw error
@@ -123,8 +129,121 @@ import PencilKit
         return notebook
     }
 
+    private static func pdfFile(of pages: [NotebookPage]) -> String? {
+        for page in pages {
+            if case .pdf(let file, _) = page.background { return file }
+        }
+        return nil
+    }
+
+    /// Replaces the pages of an imported notebook with a newer export of the same document.
+    /// Ink, text boxes, photos and bookmarks added in Carnets stay on the same page numbers.
+    @discardableResult
+    func updateNotebook(_ id: UUID, fromPDF url: URL) async throws -> Notebook? {
+        guard notebook(id) != nil else { return nil }
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        flush(id)
+        let files = self.files(for: id)
+        let result = try await Task.detached(priority: .userInitiated) { () -> ([NotebookPage], Bool) in
+            let pages = try Importer.importPDF(from: url, into: files)
+            return (pages, GoodNotesImporter.isGoodNotesPDF(url))
+        }.value
+        let fresh = result.0
+        update(id) { notebook in
+            var merged: [NotebookPage] = []
+            for (index, page) in fresh.enumerated() {
+                var updated = page
+                if notebook.pages.indices.contains(index) {
+                    let previous = notebook.pages[index]
+                    updated.id = previous.id
+                    updated.elements = previous.elements
+                    updated.isBookmarked = previous.isBookmarked
+                    updated.recognizedText = previous.recognizedText
+                    updated.searchableText = previous.searchableText
+                    updated.recognitionVersion = previous.recognitionVersion
+                    updated.revision = previous.revision + 1
+                }
+                merged.append(updated)
+            }
+            if notebook.pages.count > fresh.count {
+                merged += notebook.pages[fresh.count...]
+            }
+            notebook.pages = merged
+            var source = notebook.source ?? NotebookSource(origin: result.1 ? .goodNotes : .pdf)
+            if result.1 { source.origin = .goodNotes }
+            source.originalName = url.lastPathComponent
+            source.originalFile = Self.pdfFile(of: fresh)
+            source.updatedAt = .now
+            notebook.source = source
+        }
+        collectGarbage(id)
+        return notebook(id)
+    }
+
+    /// An already imported notebook that a new export of `fileName` should update.
+    func importedNotebook(matching fileName: String) -> Notebook? {
+        let stem = (fileName as NSString).deletingPathExtension.lowercased()
+        return notebooks.first { notebook in
+            guard let source = notebook.source, source.origin == .goodNotes || source.origin == .pdf else { return false }
+            let original = ((source.originalName ?? "") as NSString).deletingPathExtension.lowercased()
+            return original == stem || notebook.title.lowercased() == stem
+        }
+    }
+
+    /// Finds or creates the folder for an exported folder path (nested folders are shown as "A › B").
+    func folderID(forPath components: [String]) -> UUID? {
+        let name = components.filter { !$0.isEmpty }.joined(separator: " › ")
+        guard !name.isEmpty else { return nil }
+        if let existing = folders.first(where: { $0.name == name }) { return existing.id }
+        return createFolder(named: name).id
+    }
+
+    /// Combines several notebooks, in order, into a new one. The originals are kept.
+    @discardableResult
+    func merge(_ ids: [UUID], title: String) -> Notebook? {
+        let sources = ids.compactMap { notebook($0) }
+        guard sources.count >= 2, let first = sources.first else { return nil }
+        for source in sources { flush(source.id) }
+        var merged = Notebook(title: title, cover: first.cover ?? .graphite, template: first.defaultTemplate,
+                              paper: first.defaultPaper, format: first.defaultFormat, landscape: first.landscape,
+                              folderID: first.folderID)
+        let target = files(for: merged.id)
+        target.createDirectories()
+        var copies: [(URL, URL)] = []
+        var pages: [NotebookPage] = []
+        for source in sources {
+            let sourceFiles = files(for: source.id)
+            let assets = (try? FileManager.default.contentsOfDirectory(at: sourceFiles.assetsDirectory,
+                                                                      includingPropertiesForKeys: nil)) ?? []
+            for asset in assets { copies.append((asset, target.assetURL(asset.lastPathComponent))) }
+            for page in source.pages {
+                var copy = page
+                copy.id = UUID()
+                copy.elements = page.elements.map { element in
+                    var e = element
+                    e.id = UUID()
+                    return e
+                }
+                copies.append((sourceFiles.drawingURL(page.id), target.drawingURL(copy.id)))
+                pages.append(copy)
+            }
+        }
+        let pairs = copies
+        ioQueue.sync {
+            let fm = FileManager.default
+            for (from, to) in pairs where fm.fileExists(atPath: from.path) && !fm.fileExists(atPath: to.path) {
+                try? fm.copyItem(at: from, to: to)
+            }
+        }
+        merged.pages = pages
+        insert(merged)
+        HandwritingIndexer.shared.schedule(notebookID: merged.id, pageIDs: pages.map(\.id))
+        return merged
+    }
+
     /// Creates a notebook whose pages are the given images (photos or scanned documents).
-    func importImages(_ images: [UIImage], title: String, folderID: UUID?) async throws -> Notebook {
+    func importImages(_ images: [UIImage], title: String, folderID: UUID?, origin: NotebookOrigin = .photos) async throws -> Notebook {
         var notebook = Notebook(title: title, cover: nil, template: .blank, paper: .white,
                                 format: .a4, landscape: false, folderID: folderID)
         let files = self.files(for: notebook.id)
@@ -136,6 +255,7 @@ import PencilKit
             throw CarnetsError.emptyImport
         }
         notebook.pages = pages
+        notebook.source = NotebookSource(origin: origin)
         insert(notebook)
         return notebook
     }

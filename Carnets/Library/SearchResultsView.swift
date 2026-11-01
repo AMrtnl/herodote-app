@@ -79,7 +79,7 @@ struct SearchResultsView: View {
         switch match.source {
         case .title:       return "Titre du carnet"
         case .handwriting: return page + "Écriture manuscrite"
-        case .pdfText:     return page + "Texte du PDF"
+        case .pdfText:     return page + "Texte de la page (PDF ou écriture importée)"
         case .typedText:   return page + "Zone de texte"
         }
     }

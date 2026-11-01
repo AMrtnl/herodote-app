@@ -92,7 +92,8 @@ final class NotebookVaultBridge {
         ]
         var lines: [String] = [beginMarker, "# \(notebook.title)", ""]
         let count = notebook.pages.count
-        lines.append("> Carnet manuscrit · \(count) page\(count > 1 ? "s" : "") · [Ouvrir dans Carnets](carnets://carnet/\(notebook.id.uuidString))")
+        let origin = notebook.source.map { " · importé de \($0.origin.label)" } ?? ""
+        lines.append("> Carnet manuscrit · \(count) page\(count > 1 ? "s" : "")\(origin) · [Ouvrir dans Carnets](carnets://carnet/\(notebook.id.uuidString))")
         var pdfs: [String] = []
         for page in notebook.pages {
             if case .pdf(let file, _) = page.background, !pdfs.contains(file) { pdfs.append(file) }
@@ -107,9 +108,12 @@ final class NotebookVaultBridge {
             lines.append("![Page \(index + 1)](<\(data)/pages/\(image)>)")
             let typed = page.elements.filter { $0.kind == .text }.map(\.text).filter { !$0.isEmpty }
             let recognized = page.recognizedText.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !recognized.isEmpty || !typed.isEmpty {
+            // Handwriting imported from GoodNotes was read from the page image.
+            let imported = notebook.origin == .goodNotes ? page.sourceText.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+            let paragraphs = typed + [imported, recognized].filter { !$0.isEmpty }
+            if !paragraphs.isEmpty {
                 lines.append("")
-                for paragraph in (typed + (recognized.isEmpty ? [] : [recognized])) {
+                for paragraph in paragraphs {
                     lines.append(paragraph.trimmingCharacters(in: .whitespacesAndNewlines))
                     lines.append("")
                 }
@@ -183,12 +187,14 @@ nonisolated enum PageImageExporter {
             let inkSize = (try? files.drawingURL(page.id).resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
             var isScan = false
             if case .image = page.background { isScan = true }
-            guard inkSize > 0 || !page.elements.isEmpty || isScan else { continue }
+            // Every page of a GoodNotes notebook carries handwriting, even without Carnets ink.
+            let isImportedHandwriting = notebook.origin == .goodNotes
+            guard inkSize > 0 || !page.elements.isEmpty || isScan || isImportedHandwriting else { continue }
             let name = "\(page.id.uuidString).jpg"
             result[page.id] = name
             let target = folder.appendingPathComponent(name)
             if rendered[page.id.uuidString] == page.revision, fm.fileExists(atPath: target.path) { continue }
-            let scale = min(2, 1400 / max(page.size.width, 1))
+            let scale = min(2, (isImportedHandwriting && inkSize == 0 ? 1100 : 1400) / max(page.size.width, 1))
             let image = PageRenderer.renderPage(page: page, files: files, drawing: nil, scale: scale)
             if let data = image.jpegData(compressionQuality: 0.72) {
                 try? data.write(to: target, options: .atomic)

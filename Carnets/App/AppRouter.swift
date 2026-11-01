@@ -39,6 +39,7 @@ enum NotesRoute: Hashable {
     var openNotebookRequest: OpenNotebookRequest?
     var showQuickSwitcher = false
     var showSettings = false
+    var showGoodNotesImport = false
 
     private init() {}
 

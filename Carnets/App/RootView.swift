@@ -31,12 +31,16 @@ struct RootView: View {
         .sheet(isPresented: $router.showSettings) {
             SettingsSheet()
         }
+        .sheet(isPresented: $router.showGoodNotesImport) {
+            GoodNotesImportSheet()
+        }
         .onOpenURL { url in
             if router.handle(url) { return }
             guard url.isFileURL, url.pathExtension.lowercased() == "pdf" else { return }
             Task {
                 do {
                     let notebook = try await store.importPDF(from: url, folderID: nil)
+                    if notebook.origin == .goodNotes { ImportedTextRecognizer.shared.enqueueAllPages(of: notebook.id) }
                     router.openNotebook(notebook.id)
                 } catch {
                     importError = error.localizedDescription
@@ -186,6 +190,12 @@ struct RootSidebar: View {
                     .tag(AppSection.library(.favorites))
                 Label("Récents", systemImage: "clock")
                     .tag(AppSection.library(.recents))
+                let imported = store.notebooks.filter { $0.origin == .goodNotes }.count
+                if imported > 0 {
+                    Label("Importés de GoodNotes", systemImage: "square.and.arrow.down.on.square")
+                        .badge(imported)
+                        .tag(AppSection.library(.imported))
+                }
                 ForEach(store.folders) { folder in
                     Label(folder.name, systemImage: "folder")
                         .badge(store.notebooks(in: folder.id).count)
@@ -215,6 +225,11 @@ struct RootSidebar: View {
                     showNewNotebookFolder = true
                 } label: {
                     Label("Nouveau dossier de carnets", systemImage: "folder.badge.plus")
+                }
+                Button {
+                    router.showGoodNotesImport = true
+                } label: {
+                    Label("Importer depuis GoodNotes…", systemImage: "square.and.arrow.down")
                 }
             }
         }

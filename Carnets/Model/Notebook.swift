@@ -331,6 +331,52 @@ nonisolated struct NotebookPage: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - Where a notebook comes from
+
+nonisolated enum NotebookOrigin: String, Codable, Sendable {
+    case carnets, goodNotes, pdf, scan, photos
+
+    var label: String {
+        switch self {
+        case .carnets:   return "Carnets"
+        case .goodNotes: return "GoodNotes"
+        case .pdf:       return "PDF importé"
+        case .scan:      return "Numérisation"
+        case .photos:    return "Photos"
+        }
+    }
+}
+
+nonisolated struct NotebookSource: Codable, Equatable, Sendable {
+    var origin: NotebookOrigin
+    /// File name of the imported document, e.g. "Philosophie L2.pdf".
+    var originalName: String?
+    /// Asset (inside the notebook's `assets` folder) holding the original document.
+    var originalFile: String?
+    var importedAt: Date = .now
+    /// Last time a newer export replaced the pages.
+    var updatedAt: Date?
+
+    init(origin: NotebookOrigin, originalName: String? = nil, originalFile: String? = nil) {
+        self.origin = origin
+        self.originalName = originalName
+        self.originalFile = originalFile
+    }
+
+    nonisolated enum CodingKeys: String, CodingKey {
+        case origin, originalName, originalFile, importedAt, updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        origin = c.value(.origin, default: .pdf)
+        originalName = c.value(.originalName, default: Optional<String>.none)
+        originalFile = c.value(.originalFile, default: Optional<String>.none)
+        importedAt = c.value(.importedAt, default: Date.now)
+        updatedAt = c.value(.updatedAt, default: Optional<Date>.none)
+    }
+}
+
 // MARK: - Notebook
 
 nonisolated struct Notebook: Identifiable, Codable, Equatable, Sendable {
@@ -349,6 +395,10 @@ nonisolated struct Notebook: Identifiable, Codable, Equatable, Sendable {
     var defaultFormat: PageFormat = .a4
     var landscape: Bool = false
     var lastPageIndex: Int = 0
+    /// `nil` for notebooks created in Carnets.
+    var source: NotebookSource? = nil
+
+    var origin: NotebookOrigin { source?.origin ?? .carnets }
 
     init(title: String, cover: CoverStyle?, template: PageTemplate, paper: PaperStyle,
          format: PageFormat, landscape: Bool, folderID: UUID?) {
@@ -372,7 +422,7 @@ nonisolated struct Notebook: Identifiable, Codable, Equatable, Sendable {
 
     nonisolated enum CodingKeys: String, CodingKey {
         case id, title, cover, folderID, isFavorite, createdAt, modifiedAt, openedAt, pages
-        case defaultTemplate, defaultPaper, defaultFormat, landscape, lastPageIndex
+        case defaultTemplate, defaultPaper, defaultFormat, landscape, lastPageIndex, source
     }
 
     init(from decoder: Decoder) throws {
@@ -391,6 +441,7 @@ nonisolated struct Notebook: Identifiable, Codable, Equatable, Sendable {
         defaultFormat   = c.value(.defaultFormat, default: .a4)
         landscape       = c.value(.landscape, default: false)
         lastPageIndex   = c.value(.lastPageIndex, default: 0)
+        source          = c.value(.source, default: Optional<NotebookSource>.none)
     }
 }
 

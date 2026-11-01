@@ -7,12 +7,17 @@ import VisionKit
 // MARK: - Library sections
 
 enum LibrarySection: Hashable {
-    case all, favorites, recents
+    case all, favorites, recents, imported
     case folder(UUID)
 }
 
 struct OpenNotebookRequest: Identifiable {
     let id: UUID
+}
+
+struct SharedFiles: Identifiable {
+    let id = UUID()
+    let urls: [URL]
 }
 
 // MARK: - NotebookLibraryView (handwritten notebooks, shown in the main window's detail column)
@@ -43,8 +48,48 @@ struct NotebookLibraryView: View {
     @State private var errorMessage: String?
     @State private var sharedFile: SharedFile?
 
+    // Multi-selection
+    @State private var isSelecting = false
+    @State private var selection: Set<UUID> = []
+    @State private var showMergePrompt = false
+    @State private var mergeTitle = ""
+    @State private var confirmBatchDelete = false
+    @State private var sharedFiles: SharedFiles?
+    @State private var infoNotebook: OpenNotebookRequest?
+
     var body: some View {
         detail
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if isSelecting { selectionBar }
+        }
+        .sheet(item: $infoNotebook) { request in
+            NotebookInfoSheet(notebookID: request.id)
+        }
+        .sheet(item: $sharedFiles) { files in
+            ShareSheet(items: files.urls).ignoresSafeArea()
+        }
+        .alert("Fusionner \(selection.count) carnets", isPresented: $showMergePrompt) {
+            TextField("Titre du nouveau carnet", text: $mergeTitle)
+            Button("Fusionner") {
+                let ids = orderedSelection
+                if let merged = store.merge(ids, title: mergeTitle.isEmpty ? "Carnet fusionné" : mergeTitle) {
+                    endSelection()
+                    openNotebook(merged.id)
+                }
+            }
+            Button("Annuler", role: .cancel) {}
+        } message: {
+            Text("Les pages sont réunies dans un nouveau carnet, dans l’ordre affiché. Les carnets d’origine sont conservés.")
+        }
+        .confirmationDialog("Supprimer \(selection.count) carnet\(selection.count > 1 ? "s" : "") ?",
+                            isPresented: $confirmBatchDelete, titleVisibility: .visible) {
+            Button("Supprimer", role: .destructive) {
+                for id in selection { store.delete(id) }
+                endSelection()
+            }
+        } message: {
+            Text("Leurs pages seront définitivement supprimées de Carnets (vos fichiers GoodNotes ne sont pas touchés).")
+        }
         .sheet(isPresented: $showNewNotebook) {
             NewNotebookSheet(folderID: currentFolderID) { notebook in
                 openNotebook(notebook.id)
@@ -141,6 +186,7 @@ struct NotebookLibraryView: View {
         case .all:               return "Tous les carnets"
         case .favorites:         return "Favoris"
         case .recents:           return "Récents"
+        case .imported:          return "Importés de GoodNotes"
         case .folder(let id):    return store.folder(id)?.name ?? "Dossier"
         }
     }
@@ -150,6 +196,7 @@ struct NotebookLibraryView: View {
         switch section {
         case .all:            base = store.notebooks
         case .favorites:      base = store.notebooks.filter(\.isFavorite)
+        case .imported:       base = store.notebooks.filter { $0.origin == .goodNotes }
         case .recents:
             return Array(store.notebooks
                 .filter { $0.openedAt != nil }
@@ -180,7 +227,13 @@ struct NotebookLibraryView: View {
                               alignment: .leading, spacing: 34) {
                         ForEach(visibleNotebooks) { notebook in
                             NotebookCell(notebook: notebook)
-                                .onTapGesture { openNotebook(notebook.id) }
+                                .overlay(alignment: .topTrailing) {
+                                    if isSelecting { selectionMark(selection.contains(notebook.id)) }
+                                }
+                                .opacity(isSelecting && !selection.contains(notebook.id) ? 0.7 : 1)
+                                .onTapGesture {
+                                    if isSelecting { toggleSelection(notebook.id) } else { openNotebook(notebook.id) }
+                                }
                                 .contextMenu { contextMenu(for: notebook) }
                                 .draggable(notebook.id.uuidString) {
                                     NotebookCoverView(notebook: notebook).frame(width: 90, height: 120)
@@ -195,6 +248,19 @@ struct NotebookLibraryView: View {
         .navigationTitle(sectionTitle)
         .searchable(text: $searchText, prompt: "Titres, écriture, PDF…")
         .toolbar {
+            if isSelecting {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(selection.count == visibleNotebooks.count ? "Tout désélectionner" : "Tout sélectionner") {
+                        selection = selection.count == visibleNotebooks.count ? [] : Set(visibleNotebooks.map(\.id))
+                    }
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(isSelecting ? "OK" : "Sélectionner") {
+                    if isSelecting { endSelection() } else { isSelecting = true }
+                }
+                .disabled(visibleNotebooks.isEmpty && !isSelecting)
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Picker("Trier par", selection: $settings.librarySort) {
@@ -225,6 +291,11 @@ struct NotebookLibraryView: View {
             }
             Divider()
             Button {
+                router.showGoodNotesImport = true
+            } label: {
+                Label("Importer depuis GoodNotes…", systemImage: "square.and.arrow.down.on.square")
+            }
+            Button {
                 showPDFImporter = true
             } label: {
                 Label("Importer un PDF…", systemImage: "doc.richtext")
@@ -253,7 +324,23 @@ struct NotebookLibraryView: View {
         }
     }
 
+    @ViewBuilder
     private var emptyState: some View {
+        if section == .imported {
+            ContentUnavailableView {
+                Label("Aucun carnet importé", systemImage: "square.and.arrow.down.on.square")
+            } description: {
+                Text("Exportez vos carnets GoodNotes en PDF (un dossier devient une archive ZIP) et importez-les : ils gardent leurs dossiers, et leur écriture devient cherchable.")
+            } actions: {
+                Button("Importer depuis GoodNotes") { router.showGoodNotesImport = true }
+                    .buttonStyle(.glassProminent)
+            }
+        } else {
+            defaultEmptyState
+        }
+    }
+
+    private var defaultEmptyState: some View {
         ContentUnavailableView {
             Label(section == .favorites ? "Aucun favori" : "Aucun carnet", systemImage: "book.closed")
         } description: {
@@ -276,6 +363,17 @@ struct NotebookLibraryView: View {
             openNotebook(notebook.id)
         } label: {
             Label("Ouvrir", systemImage: "book")
+        }
+        Button {
+            infoNotebook = OpenNotebookRequest(id: notebook.id)
+        } label: {
+            Label(notebook.origin == .goodNotes ? "Infos et mise à jour GoodNotes…" : "Infos…", systemImage: "info.circle")
+        }
+        Button {
+            isSelecting = true
+            selection = [notebook.id]
+        } label: {
+            Label("Sélectionner", systemImage: "checkmark.circle")
         }
         Button {
             renameText = notebook.title
@@ -323,6 +421,110 @@ struct NotebookLibraryView: View {
         }
     }
 
+    // MARK: Multi-selection
+
+    private var orderedSelection: [UUID] {
+        visibleNotebooks.map(\.id).filter { selection.contains($0) }
+    }
+
+    private func toggleSelection(_ id: UUID) {
+        if selection.contains(id) { selection.remove(id) } else { selection.insert(id) }
+    }
+
+    private func endSelection() {
+        isSelecting = false
+        selection = []
+    }
+
+    private func selectionMark(_ selected: Bool) -> some View {
+        Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+            .font(.title2)
+            .symbolRenderingMode(.palette)
+            .foregroundStyle(selected ? Color.white : Color.secondary, selected ? Color.accentColor : Color.white.opacity(0.8))
+            .background(Circle().fill(.ultraThinMaterial).padding(2))
+            .padding(6)
+    }
+
+    private var selectionBar: some View {
+        let count = selection.count
+        let allFavorite = !selection.isEmpty && selection.allSatisfy { store.notebook($0)?.isFavorite == true }
+        return HStack(spacing: 2) {
+            Text(count == 0 ? "Sélectionnez des carnets" : "\(count) sélectionné\(count > 1 ? "s" : "")")
+                .font(.callout.weight(.medium))
+                .padding(.horizontal, 10)
+            Spacer(minLength: 8)
+            Menu {
+                Button("Aucun dossier") { for id in selection { store.move(id, to: nil) } }
+                ForEach(store.folders) { folder in
+                    Button(folder.name) { for id in selection { store.move(id, to: folder.id) } }
+                }
+            } label: {
+                Label("Déplacer", systemImage: "folder")
+            }
+            Button {
+                for id in selection where (store.notebook(id)?.isFavorite == true) == allFavorite {
+                    store.toggleFavorite(id)
+                }
+            } label: {
+                Label(allFavorite ? "Retirer des favoris" : "Favoris", systemImage: allFavorite ? "star.slash" : "star")
+            }
+            Button {
+                mergeTitle = (orderedSelection.first.flatMap { store.notebook($0)?.title } ?? "Carnet") + " (fusion)"
+                showMergePrompt = true
+            } label: {
+                Label("Fusionner", systemImage: "rectangle.stack.badge.plus")
+            }
+            .disabled(count < 2)
+            Button {
+                exportSelected()
+            } label: {
+                Label("Exporter", systemImage: "square.and.arrow.up")
+            }
+            Button(role: .destructive) {
+                confirmBatchDelete = true
+            } label: {
+                Label("Supprimer", systemImage: "trash")
+            }
+        }
+        .labelStyle(.iconOnly)
+        .font(.body)
+        .disabled(isBusy)
+        .buttonStyle(.borderless)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .glassEffect(in: Capsule())
+        .padding(.horizontal, 20)
+        .padding(.bottom, 10)
+        .opacity(count == 0 ? 0.85 : 1)
+    }
+
+    private var isBusy: Bool { busyMessage != nil }
+
+    private func exportSelected() {
+        let notebooks = orderedSelection.compactMap { store.notebook($0) }
+        guard !notebooks.isEmpty else { return }
+        for notebook in notebooks { store.flush(notebook.id) }
+        store.waitForPendingWrites()
+        let jobs = notebooks.map { ($0, store.files(for: $0.id)) }
+        busyMessage = "Exportation de \(notebooks.count) PDF…"
+        Task {
+            let urls = await Task.detached(priority: .userInitiated) { () -> [URL] in
+                var result: [URL] = []
+                for (notebook, files) in jobs {
+                    let url = FileManager.default.temporaryDirectory
+                        .appendingPathComponent(PageRenderer.exportFileName(notebook.title, ext: "pdf"))
+                    try? FileManager.default.removeItem(at: url)
+                    if (try? PageRenderer.exportPDF(notebook: notebook, files: files, drawings: nil, to: url)) != nil {
+                        result.append(url)
+                    }
+                }
+                return result
+            }.value
+            busyMessage = nil
+            if !urls.isEmpty { sharedFiles = SharedFiles(urls: urls) }
+        }
+    }
+
     // MARK: Actions
 
     private func openNotebook(_ id: UUID, page: Int? = nil) {
@@ -345,7 +547,9 @@ struct NotebookLibraryView: View {
             var imported: [Notebook] = []
             for url in urls {
                 do {
-                    imported.append(try await store.importPDF(from: url, folderID: folder))
+                    let notebook = try await store.importPDF(from: url, folderID: folder)
+                    if notebook.origin == .goodNotes { ImportedTextRecognizer.shared.enqueueAllPages(of: notebook.id) }
+                    imported.append(notebook)
                 } catch {
                     errorMessage = "« \(url.lastPathComponent) » : \(error.localizedDescription)"
                 }
@@ -386,7 +590,7 @@ struct NotebookLibraryView: View {
         Task {
             do {
                 let title = "Numérisation du " + Date.now.formatted(date: .abbreviated, time: .shortened)
-                let notebook = try await store.importImages(images, title: title, folderID: folder)
+                let notebook = try await store.importImages(images, title: title, folderID: folder, origin: .scan)
                 busyMessage = nil
                 openNotebook(notebook.id)
             } catch {
