@@ -1,23 +1,30 @@
 import SwiftUI
 
 // MARK: - RootView
-// One window, three ways of writing: Notes (Obsidian-style vault), Écriture (Ulysses-style
-// projects) and Carnets manuscrits (GoodNotes-style handwriting) — all stored in the same vault.
+// Three apps in one window, one tab each, all stored in the same vault:
+//  • Carnets  — handwritten notebooks (written on iPad, readable on iPhone and Mac)
+//  • Notes    — the Obsidian-style vault
+//  • Écriture — Ulysses-style writing projects
 
 struct RootView: View {
-    @Environment(VaultStore.self) private var vault
     @Environment(NotebookStore.self) private var store
     @Environment(AppRouter.self) private var router
     @State private var importError: String?
 
     var body: some View {
         @Bindable var router = router
-        NavigationSplitView {
-            RootSidebar()
-        } detail: {
-            detail
-                .id(router.section)
+        TabView(selection: Binding(get: { router.space }, set: { router.show($0) })) {
+            Tab(AppSpace.carnets.title, systemImage: AppSpace.carnets.symbol, value: AppSpace.carnets) {
+                CarnetsSpaceView()
+            }
+            Tab(AppSpace.notes.title, systemImage: AppSpace.notes.symbol, value: AppSpace.notes) {
+                NotesSpaceView()
+            }
+            Tab(AppSpace.writing.title, systemImage: AppSpace.writing.symbol, value: AppSpace.writing) {
+                WritingSpaceView()
+            }
         }
+        .tabViewStyle(.tabBarOnly)
         .fullScreenCover(item: $router.openNotebookRequest, onDismiss: {
             SyncCenter.shared.isNotebookOpen = false
         }) { request in
@@ -37,6 +44,10 @@ struct RootView: View {
         .onOpenURL { url in
             if router.handle(url) { return }
             guard url.isFileURL, url.pathExtension.lowercased() == "pdf" else { return }
+            guard !store.isReadOnly else {
+                importError = "Importez les PDF sur iPad : sur \(Platform.deviceName), les carnets sont en lecture seule."
+                return
+            }
             Task {
                 do {
                     let notebook = try await store.importPDF(from: url, folderID: nil)
@@ -53,43 +64,84 @@ struct RootView: View {
             Text(importError ?? "")
         }
     }
+}
 
-    @ViewBuilder
-    private var detail: some View {
-        switch router.section ?? .notes {
-        case .notes:
-            NotesStack { NotesBrowserView(folder: nil) }
-        case .folder(let folder):
-            NotesStack { NotesBrowserView(folder: folder) }
-        case .graph:
-            NotesStack { GraphView() }
-        case .tags:
-            NotesStack { TagsView() }
-        case .search:
-            NotesStack { UnifiedSearchView() }
-        case .writing:
-            NotesStack { ProjectsView() }
-        case .project(let folder):
-            NotesStack { ProjectView(folder: folder) }
-        case .library(let section):
-            NavigationStack { NotebookLibraryView(section: section) }
+// MARK: - The three spaces
+
+struct CarnetsSpaceView: View {
+    @Environment(AppRouter.self) private var router
+    /// On iPhone, open on the content rather than on the sidebar.
+    @State private var compactColumn = NavigationSplitViewColumn.detail
+
+    var body: some View {
+        NavigationSplitView(preferredCompactColumn: $compactColumn) {
+            CarnetsSidebar()
+        } detail: {
+            NavigationStack {
+                NotebookLibraryView(section: router.librarySection ?? .all)
+            }
+            .id(router.librarySection)
         }
     }
 }
 
-// MARK: - NotesStack (shared navigation for notes, folders, tags and writing projects)
+struct NotesSpaceView: View {
+    @Environment(AppRouter.self) private var router
+    @State private var compactColumn = NavigationSplitViewColumn.detail
+
+    var body: some View {
+        @Bindable var router = router
+        NavigationSplitView(preferredCompactColumn: $compactColumn) {
+            NotesSidebar()
+        } detail: {
+            NotesStack(path: $router.notesPath) {
+                switch router.notesSection ?? .all {
+                case .all:                NotesBrowserView(folder: nil)
+                case .folder(let folder): NotesBrowserView(folder: folder)
+                case .graph:              GraphView()
+                case .tags:               TagsView()
+                case .search:             UnifiedSearchView()
+                }
+            }
+            .id(router.notesSection)
+        }
+    }
+}
+
+struct WritingSpaceView: View {
+    @Environment(AppRouter.self) private var router
+    @State private var compactColumn = NavigationSplitViewColumn.detail
+
+    var body: some View {
+        @Bindable var router = router
+        NavigationSplitView(preferredCompactColumn: $compactColumn) {
+            WritingSidebar()
+        } detail: {
+            NotesStack(path: $router.writingPath) {
+                switch router.writingSection ?? .projects {
+                case .projects:            ProjectsView()
+                case .project(let folder): ProjectView(folder: folder)
+                }
+            }
+            .id(router.writingSection)
+        }
+    }
+}
+
+// MARK: - NotesStack (navigation for notes, folders, tags and writing projects)
 
 struct NotesStack<Root: View>: View {
     @Environment(AppRouter.self) private var router
+    @Binding private var path: [NotesRoute]
     private let root: Root
 
-    init(@ViewBuilder root: () -> Root) {
+    init(path: Binding<[NotesRoute]>, @ViewBuilder root: () -> Root) {
+        _path = path
         self.root = root()
     }
 
     var body: some View {
-        @Bindable var router = router
-        NavigationStack(path: $router.path) {
+        NavigationStack(path: $path) {
             root.navigationDestination(for: NotesRoute.self) { route in
                 destination(route)
             }
@@ -115,178 +167,41 @@ struct NotesStack<Root: View>: View {
     }
 }
 
-// MARK: - Sidebar
+// MARK: - Shared sidebar chrome (quick switcher, settings, sync status)
 
-struct RootSidebar: View {
-    @Environment(VaultStore.self) private var vault
-    @Environment(NotebookStore.self) private var store
+struct SidebarChrome: ViewModifier {
     @Environment(AppRouter.self) private var router
+    let title: String
 
-    @State private var showNewProject = false
-    @State private var projectName = ""
-    @State private var showNewNotebookFolder = false
-    @State private var showNewVaultFolder = false
-    @State private var folderName = ""
-    @State private var renamingNotebookFolder: Folder?
-
-    /// Top-level vault folders shown in the sidebar (system folders have their own sections).
-    private var topFolders: [String] {
-        vault.subfolders(of: "").filter {
-            $0 != VaultPaths.carnets && $0 != VaultPaths.writing && $0 != VaultPaths.attachments
-        }
+    func body(content: Content) -> some View {
+        content
+            .navigationTitle(title)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        router.showQuickSwitcher = true
+                    } label: {
+                        Label("Ouvrir rapidement", systemImage: "command")
+                    }
+                    .keyboardShortcut("o", modifiers: .command)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        router.showSettings = true
+                    } label: {
+                        Label("Réglages", systemImage: "gearshape")
+                    }
+                }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                SyncStatusFooter()
+            }
     }
+}
 
-    var body: some View {
-        List(selection: Binding(get: { router.section }, set: { router.select($0) })) {
-            Section("Coffre") {
-                Label("Toutes les notes", systemImage: "doc.text")
-                    .badge(vault.notes.count)
-                    .tag(AppSection.notes)
-                Button {
-                    router.openToday()
-                } label: {
-                    Label("Aujourd’hui", systemImage: "calendar")
-                }
-                Label("Graphe", systemImage: "point.3.connected.trianglepath.dotted")
-                    .tag(AppSection.graph)
-                Label("Étiquettes", systemImage: "number")
-                    .tag(AppSection.tags)
-                Label("Recherche", systemImage: "magnifyingglass")
-                    .tag(AppSection.search)
-                ForEach(topFolders, id: \.self) { folder in
-                    Label(VaultPaths.fileName(of: folder),
-                          systemImage: folder == VaultPaths.journal ? "calendar.badge.clock" : "folder")
-                        .badge(vault.notes(inFolder: folder).count)
-                        .tag(AppSection.folder(folder))
-                }
-                Button {
-                    folderName = ""
-                    showNewVaultFolder = true
-                } label: {
-                    Label("Nouveau dossier", systemImage: "folder.badge.plus")
-                }
-            }
-
-            Section("Écriture") {
-                Label("Projets", systemImage: "text.book.closed")
-                    .tag(AppSection.writing)
-                ForEach(vault.projectFolders, id: \.self) { folder in
-                    Label(vault.project(at: folder)?.title ?? VaultPaths.fileName(of: folder), systemImage: "doc.richtext")
-                        .tag(AppSection.project(folder))
-                }
-                Button {
-                    projectName = ""
-                    showNewProject = true
-                } label: {
-                    Label("Nouveau projet", systemImage: "plus")
-                }
-            }
-
-            Section("Carnets manuscrits") {
-                Label("Tous les carnets", systemImage: "books.vertical")
-                    .badge(store.notebooks.count)
-                    .tag(AppSection.library(.all))
-                Label("Favoris", systemImage: "star")
-                    .tag(AppSection.library(.favorites))
-                Label("Récents", systemImage: "clock")
-                    .tag(AppSection.library(.recents))
-                let imported = store.notebooks.filter { $0.origin == .goodNotes }.count
-                if imported > 0 {
-                    Label("Importés de GoodNotes", systemImage: "square.and.arrow.down.on.square")
-                        .badge(imported)
-                        .tag(AppSection.library(.imported))
-                }
-                ForEach(store.folders) { folder in
-                    Label(folder.name, systemImage: "folder")
-                        .badge(store.notebooks(in: folder.id).count)
-                        .tag(AppSection.library(.folder(folder.id)))
-                        .contextMenu {
-                            Button {
-                                folderName = folder.name
-                                renamingNotebookFolder = folder
-                            } label: {
-                                Label("Renommer", systemImage: "pencil")
-                            }
-                            Button(role: .destructive) {
-                                if router.section == .library(.folder(folder.id)) { router.select(.library(.all)) }
-                                store.deleteFolder(folder.id)
-                            } label: {
-                                Label("Supprimer le dossier", systemImage: "trash")
-                            }
-                        }
-                        .dropDestination(for: String.self) { identifiers, _ in
-                            let ids = identifiers.compactMap(UUID.init(uuidString:))
-                            ids.forEach { store.move($0, to: folder.id) }
-                            return !ids.isEmpty
-                        }
-                }
-                Button {
-                    folderName = ""
-                    showNewNotebookFolder = true
-                } label: {
-                    Label("Nouveau dossier de carnets", systemImage: "folder.badge.plus")
-                }
-                Button {
-                    router.showGoodNotesImport = true
-                } label: {
-                    Label("Importer depuis GoodNotes…", systemImage: "square.and.arrow.down")
-                }
-            }
-        }
-        .navigationTitle("Carnets")
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    router.showQuickSwitcher = true
-                } label: {
-                    Label("Ouvrir rapidement", systemImage: "command")
-                }
-                .keyboardShortcut("o", modifiers: .command)
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    router.showSettings = true
-                } label: {
-                    Label("Réglages", systemImage: "gearshape")
-                }
-            }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            SyncStatusFooter()
-        }
-        .alert("Nouveau projet d’écriture", isPresented: $showNewProject) {
-            TextField("Titre du projet", text: $projectName)
-            Button("Créer") {
-                let folder = vault.createProject(title: projectName.isEmpty ? "Projet sans titre" : projectName)
-                router.select(.project(folder))
-            }
-            Button("Annuler", role: .cancel) {}
-        }
-        .alert("Nouveau dossier", isPresented: $showNewVaultFolder) {
-            TextField("Nom du dossier", text: $folderName)
-            Button("Créer") {
-                let folder = vault.createFolder(in: "", name: folderName.isEmpty ? "Nouveau dossier" : folderName)
-                router.select(.folder(folder))
-            }
-            Button("Annuler", role: .cancel) {}
-        }
-        .alert("Nouveau dossier de carnets", isPresented: $showNewNotebookFolder) {
-            TextField("Nom du dossier", text: $folderName)
-            Button("Créer") {
-                let folder = store.createFolder(named: folderName)
-                router.select(.library(.folder(folder.id)))
-            }
-            Button("Annuler", role: .cancel) {}
-        }
-        .alert("Renommer le dossier", isPresented: Binding(get: { renamingNotebookFolder != nil },
-                                                           set: { if !$0 { renamingNotebookFolder = nil } })) {
-            TextField("Nom du dossier", text: $folderName)
-            Button("Renommer") {
-                if let folder = renamingNotebookFolder { store.renameFolder(folder.id, to: folderName) }
-                renamingNotebookFolder = nil
-            }
-            Button("Annuler", role: .cancel) { renamingNotebookFolder = nil }
-        }
+extension View {
+    func sidebarChrome(_ title: String) -> some View {
+        modifier(SidebarChrome(title: title))
     }
 }
 

@@ -229,6 +229,10 @@ struct ToolOptionsView: View {
                 Text("Touchez une image ou une zone de texte pour la sélectionner, faites-la glisser pour la déplacer, tirez la poignée pour la redimensionner.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            case .laser:
+                Text("Montrez une partie de la page pendant une présentation ou un appel : le trait rouge s’efface tout seul et n’est jamais enregistré.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             case .pencil, .highlighter:
                 Text("Choisissez la couleur et l’épaisseur dans la barre d’outils.")
                     .font(.footnote)
@@ -246,5 +250,59 @@ struct ToolOptionsView: View {
         .font(.callout)
         .padding(18)
         .frame(width: 300)
+    }
+}
+
+// MARK: - ReaderBar (iPhone and Mac: the notebook is read-only)
+
+struct ReaderBar: View {
+    @Bindable var model: EditorModel
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Label("Lecture seule", systemImage: "eye")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .padding(.horizontal, 10)
+                .help(Platform.readOnlyExplanation)
+            Capsule()
+                .fill(Color.primary.opacity(0.14))
+                .frame(width: 1, height: 22)
+                .padding(.horizontal, 4)
+            item("laser.burst", "Pointeur laser", isOn: model.tool == .laser) {
+                model.select(.laser)
+            }
+            item("rectangle.split.2x1", "Pages côte à côte", isOn: model.isHorizontal) {
+                model.toggleScrollDirection()
+            }
+            item("arrow.left.and.right", model.isHorizontal ? "Page entière" : "Ajuster à la largeur", isOn: false) {
+                model.canvas?.zoomToFitWidth()
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .glassEffect(.regular, in: Capsule())
+        .padding(.horizontal, 12)
+    }
+
+    private func item(_ symbol: String, _ label: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 17, weight: isOn ? .semibold : .regular))
+                .foregroundStyle(isOn ? Color.accentColor : Color.primary)
+                .frame(width: 40, height: 36)
+                .background {
+                    if isOn {
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .fill(Color.accentColor.opacity(0.14))
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(isOn ? .isSelected : [])
+        .help(label)
     }
 }

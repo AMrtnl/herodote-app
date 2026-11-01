@@ -7,8 +7,11 @@ import VisionKit
 // MARK: - Library sections
 
 enum LibrarySection: Hashable {
-    case all, favorites, recents, imported
+    case all, favorites, recents, imported, documents
     case folder(UUID)
+
+    /// Notebooks shown under « PDF et documents ».
+    static let documentOrigins: Set<NotebookOrigin> = [.pdf, .scan, .photos]
 }
 
 struct OpenNotebookRequest: Identifiable {
@@ -131,7 +134,7 @@ struct NotebookLibraryView: View {
             TextField("Nom du dossier", text: $folderName)
             Button("Créer") {
                 let folder = store.createFolder(named: folderName)
-                router.select(.library(.folder(folder.id)))
+                router.selectLibrary(.folder(folder.id))
                 folderName = ""
             }
             Button("Annuler", role: .cancel) { folderName = "" }
@@ -187,6 +190,7 @@ struct NotebookLibraryView: View {
         case .favorites:         return "Favoris"
         case .recents:           return "Récents"
         case .imported:          return "Importés de GoodNotes"
+        case .documents:         return "PDF et documents"
         case .folder(let id):    return store.folder(id)?.name ?? "Dossier"
         }
     }
@@ -197,6 +201,7 @@ struct NotebookLibraryView: View {
         case .all:            base = store.notebooks
         case .favorites:      base = store.notebooks.filter(\.isFavorite)
         case .imported:       base = store.notebooks.filter { $0.origin == .goodNotes }
+        case .documents:      base = store.notebooks.filter { LibrarySection.documentOrigins.contains($0.origin) }
         case .recents:
             return Array(store.notebooks
                 .filter { $0.openedAt != nil }
@@ -223,6 +228,14 @@ struct NotebookLibraryView: View {
                 emptyState
             } else {
                 ScrollView {
+                    if store.isReadOnly {
+                        ReadOnlyBanner()
+                            .padding(14)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .padding(.horizontal, 20)
+                            .padding(.top, 12)
+                    }
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 28)],
                               alignment: .leading, spacing: 34) {
                         ForEach(visibleNotebooks) { notebook in
@@ -272,7 +285,17 @@ struct NotebookLibraryView: View {
                 .onChange(of: settings.librarySort) { settings.save() }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                createMenu
+                if store.isReadOnly {
+                    Menu {
+                        Section(Platform.readOnlyTitle) {
+                            Text(Platform.readOnlyExplanation)
+                        }
+                    } label: {
+                        Label("Lecture seule", systemImage: "eye")
+                    }
+                } else {
+                    createMenu
+                }
             }
         }
     }
@@ -340,7 +363,23 @@ struct NotebookLibraryView: View {
         }
     }
 
+    @ViewBuilder
     private var defaultEmptyState: some View {
+        if store.isReadOnly {
+            ContentUnavailableView {
+                Label(section == .favorites ? "Aucun favori" : "Aucun carnet", systemImage: "book.closed")
+            } description: {
+                Text("Les carnets que vous écrivez sur iPad apparaissent ici dès que le coffre est synchronisé (serveur WebDAV, iCloud Drive ou autre dossier partagé).")
+            } actions: {
+                Button("Réglages du coffre") { router.showSettings = true }
+                    .buttonStyle(.glass)
+            }
+        } else {
+            editableEmptyState
+        }
+    }
+
+    private var editableEmptyState: some View {
         ContentUnavailableView {
             Label(section == .favorites ? "Aucun favori" : "Aucun carnet", systemImage: "book.closed")
         } description: {
@@ -367,8 +406,22 @@ struct NotebookLibraryView: View {
         Button {
             infoNotebook = OpenNotebookRequest(id: notebook.id)
         } label: {
-            Label(notebook.origin == .goodNotes ? "Infos et mise à jour GoodNotes…" : "Infos…", systemImage: "info.circle")
+            Label(notebook.origin == .goodNotes && !store.isReadOnly ? "Infos et mise à jour GoodNotes…" : "Infos…",
+                  systemImage: "info.circle")
         }
+        if store.isReadOnly {
+            Button {
+                exportPDF(notebook)
+            } label: {
+                Label("Exporter en PDF", systemImage: "square.and.arrow.up")
+            }
+        } else {
+            editingMenuItems(for: notebook)
+        }
+    }
+
+    @ViewBuilder
+    private func editingMenuItems(for notebook: Notebook) -> some View {
         Button {
             isSelecting = true
             selection = [notebook.id]
@@ -453,37 +506,41 @@ struct NotebookLibraryView: View {
                 .font(.callout.weight(.medium))
                 .padding(.horizontal, 10)
             Spacer(minLength: 8)
-            Menu {
-                Button("Aucun dossier") { for id in selection { store.move(id, to: nil) } }
-                ForEach(store.folders) { folder in
-                    Button(folder.name) { for id in selection { store.move(id, to: folder.id) } }
+            if !store.isReadOnly {
+                Menu {
+                    Button("Aucun dossier") { for id in selection { store.move(id, to: nil) } }
+                    ForEach(store.folders) { folder in
+                        Button(folder.name) { for id in selection { store.move(id, to: folder.id) } }
+                    }
+                } label: {
+                    Label("Déplacer", systemImage: "folder")
                 }
-            } label: {
-                Label("Déplacer", systemImage: "folder")
-            }
-            Button {
-                for id in selection where (store.notebook(id)?.isFavorite == true) == allFavorite {
-                    store.toggleFavorite(id)
+                Button {
+                    for id in selection where (store.notebook(id)?.isFavorite == true) == allFavorite {
+                        store.toggleFavorite(id)
+                    }
+                } label: {
+                    Label(allFavorite ? "Retirer des favoris" : "Favoris", systemImage: allFavorite ? "star.slash" : "star")
                 }
-            } label: {
-                Label(allFavorite ? "Retirer des favoris" : "Favoris", systemImage: allFavorite ? "star.slash" : "star")
+                Button {
+                    mergeTitle = (orderedSelection.first.flatMap { store.notebook($0)?.title } ?? "Carnet") + " (fusion)"
+                    showMergePrompt = true
+                } label: {
+                    Label("Fusionner", systemImage: "rectangle.stack.badge.plus")
+                }
+                .disabled(count < 2)
             }
-            Button {
-                mergeTitle = (orderedSelection.first.flatMap { store.notebook($0)?.title } ?? "Carnet") + " (fusion)"
-                showMergePrompt = true
-            } label: {
-                Label("Fusionner", systemImage: "rectangle.stack.badge.plus")
-            }
-            .disabled(count < 2)
             Button {
                 exportSelected()
             } label: {
                 Label("Exporter", systemImage: "square.and.arrow.up")
             }
-            Button(role: .destructive) {
-                confirmBatchDelete = true
-            } label: {
-                Label("Supprimer", systemImage: "trash")
+            if !store.isReadOnly {
+                Button(role: .destructive) {
+                    confirmBatchDelete = true
+                } label: {
+                    Label("Supprimer", systemImage: "trash")
+                }
             }
         }
         .labelStyle(.iconOnly)

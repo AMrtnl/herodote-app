@@ -120,7 +120,7 @@ struct NotesBrowserView: View {
                     if let folder, !folder.isEmpty, vault.project(at: folder) == nil {
                         Button {
                             vault.makeProject(from: folder)
-                            router.select(.project(folder))
+                            router.openProject(folder)
                         } label: {
                             Label("Convertir en projet d’écriture", systemImage: "doc.richtext")
                         }

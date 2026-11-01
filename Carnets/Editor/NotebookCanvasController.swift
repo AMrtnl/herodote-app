@@ -4,8 +4,8 @@ import PDFKit
 
 // MARK: - NotebookCanvasController
 //
-// One PKCanvasView hosts the whole notebook: pages are stacked vertically in a single
-// "canvas coordinate space" (points, before zoom). Ink is split per page when saved
+// One PKCanvasView hosts the whole notebook: pages are stacked vertically (or side by side,
+// turned one at a time) in a single "canvas coordinate space" (points, before zoom). Ink is split per page when saved
 // and re-composed when the notebook opens, so each page keeps its own drawing file.
 //
 // Layering inside the canvas (bottom → top):
@@ -34,6 +34,11 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
     private var laidOutWidth: CGFloat = 0
     private var insets = UIEdgeInsets.zero
     private var pendingScrollPage: Int?
+    /// Pages side by side, snapping one page at a time.
+    private var horizontal = false
+    private var isReadOnly: Bool { model.isReadOnly }
+    private var laserUndoSuspended = false
+    private var dragStartPage = 0
 
     // Views
     private let underlay = UIView()
@@ -131,8 +136,12 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
         // Ink colours are shown exactly as chosen, whatever the system appearance.
         canvasView.overrideUserInterfaceStyle = .light
         canvasView.contentInsetAdjustmentBehavior = .never
-        canvasView.alwaysBounceVertical = true
+        horizontal = model.isHorizontal
+        canvasView.alwaysBounceVertical = !horizontal
+        canvasView.alwaysBounceHorizontal = horizontal
         canvasView.showsHorizontalScrollIndicator = false
+        canvasView.showsVerticalScrollIndicator = !horizontal
+        canvasView.decelerationRate = horizontal ? .fast : .normal
         canvasView.delegate = self
         view.addSubview(canvasView)
 
@@ -189,8 +198,13 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
 
     /// Called when the editor closes.
     func finish() {
-        commitInk()
         let index = model.currentPageIndex
+        if isReadOnly {
+            // Readers keep their place on the device; the notebook itself is never written.
+            ReadingPositions.set(index, for: model.notebookID)
+            return
+        }
+        commitInk()
         model.store.update(model.notebookID, touch: false) { $0.lastPageIndex = index }
         model.store.flush(model.notebookID)
         model.store.collectGarbage(model.notebookID)
@@ -218,7 +232,8 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
             self.savedData = loaded.1
             for (id, drawing) in loaded.0 { self.savedFingerprints[id] = Self.fingerprint(drawing) }
             self.isLoaded = true
-            let last = self.model.notebook?.lastPageIndex ?? 0
+            let stored = self.model.notebook?.lastPageIndex ?? 0
+            let last = self.isReadOnly ? (ReadingPositions.page(for: self.model.notebookID) ?? stored) : stored
             self.rebuild(scrollTo: min(max(last, 0), max(self.pages.count - 1, 0)))
             self.model.isLoaded = true
             if self.pages.contains(where: { $0.recognitionVersion < PKStrokeRecognizer.recognitionVersion }) {
@@ -239,6 +254,19 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
     }
 
     private func computeLayout() {
+        if horizontal {
+            let tallest = pages.map { $0.size.height }.max() ?? PageFormat.a4.portraitSize.height
+            var x = margin
+            pageRects = pages.map { page in
+                let rect = CGRect(x: x, y: margin + (tallest - page.size.height) / 2,
+                                  width: page.size.width, height: page.size.height)
+                x += page.size.width + pageGap * 2
+                return rect
+            }
+            contentWidth = max(x - pageGap * 2 + margin, margin * 2)
+            contentHeight = tallest + margin * 2
+            return
+        }
         let widest = pages.map { $0.size.width }.max() ?? PageFormat.a4.portraitSize.width
         contentWidth = widest + margin * 2
         var y = margin
@@ -281,14 +309,25 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
         guard width > 0, contentWidth > 0 else { return }
         let anchor: CGRect? = (preserveRelative && fitScale > 0) ? visibleCanvasRect() : nil
         let relative = (preserveRelative && fitScale > 0) ? canvasView.zoomScale / fitScale : 1
-        fitScale = width / contentWidth
+        if horizontal {
+            // One whole page on screen at "fit".
+            let widest = (pages.map { $0.size.width }.max() ?? PageFormat.a4.portraitSize.width) + margin * 2
+            let visibleHeight = max(1, canvasView.bounds.height - insets.top - insets.bottom)
+            fitScale = min(width / widest, visibleHeight / max(contentHeight, 1))
+        } else {
+            fitScale = width / contentWidth
+        }
         laidOutWidth = width
         canvasView.minimumZoomScale = fitScale * 0.5
         canvasView.maximumZoomScale = fitScale * 6
         canvasView.zoomScale = min(max(fitScale * relative, canvasView.minimumZoomScale), canvasView.maximumZoomScale)
         updateContentSize()
         if let anchor {
-            setOffset(y: anchor.minY * canvasView.zoomScale - insets.top, animated: false)
+            if horizontal {
+                scrollToPage(pageIndex(at: CGPoint(x: anchor.midX, y: anchor.midY)), animated: false)
+            } else {
+                setOffset(y: anchor.minY * canvasView.zoomScale - insets.top, animated: false)
+            }
         }
         layoutPageContent()
         scheduleDetailRefresh()
@@ -300,7 +339,17 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
         if canvasView.contentSize != size { canvasView.contentSize = size }
         underlay.frame = CGRect(origin: .zero, size: size)
         let side = max(0, (canvasView.bounds.width - size.width) / 2)
-        let newInsets = UIEdgeInsets(top: insets.top, left: side, bottom: insets.bottom, right: side)
+        var top = insets.top
+        var bottom = insets.bottom
+        if horizontal {
+            // Centre the row of pages vertically when it is shorter than the screen.
+            let free = canvasView.bounds.height - insets.top - insets.bottom - size.height
+            if free > 0 {
+                top += free / 2
+                bottom += free / 2
+            }
+        }
+        let newInsets = UIEdgeInsets(top: top, left: side, bottom: bottom, right: side)
         if canvasView.contentInset != newInsets { canvasView.contentInset = newInsets }
     }
 
@@ -310,7 +359,11 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
         insets = UIEdgeInsets(top: top, left: 0, bottom: bottom, right: 0)
         updateContentSize()
         if isLoaded, abs(delta) > 0.5 {
-            setOffset(y: canvasView.contentOffset.y - delta, animated: false)
+            if horizontal {
+                configureZoom(preserveRelative: true)
+            } else {
+                setOffset(y: canvasView.contentOffset.y - delta, animated: false)
+            }
         }
     }
 
@@ -369,7 +422,7 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
     func commitInk() {
         saveTask?.cancel()
         saveTask = nil
-        guard isLoaded, pages.count == pageRects.count, !pages.isEmpty else { return }
+        guard !isReadOnly, isLoaded, pages.count == pageRects.count, !pages.isEmpty else { return }
         let split = splitDrawing(canvasView.drawing)
         var changed: [UUID: Data] = [:]
         var changedDrawings: [UUID: PKDrawing] = [:]
@@ -411,17 +464,27 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
                 : PKEraserTool(.fixedWidthBitmap, width: configuration.eraserWidth)
         case .lasso:
             canvasView.tool = PKLassoTool()
+        case .laser:
+            canvasView.tool = PKInkingTool(.monoline, color: Self.laserColor, width: 4)
         case .text, .hand:
             break
         }
-        let drawingTool = configuration.tool != .text && configuration.tool != .hand
+        let laser = configuration.tool == .laser
+        let drawingTool = configuration.readOnly ? laser : (configuration.tool != .text && configuration.tool != .hand)
         canvasView.isDrawingEnabled = drawingTool
-        canvasView.isRulerActive = configuration.ruler
-        canvasView.drawingPolicy = configuration.fingerDrawing ? .anyInput : .pencilOnly
-        elementTap.isEnabled = !drawingTool
-        elementDoubleTap.isEnabled = configuration.tool == .hand
-        elementPan.isEnabled = configuration.tool == .hand
-        touchObserver.isEnabled = configuration.tool.isInk
+        canvasView.isRulerActive = configuration.ruler && !configuration.readOnly && !laser
+        // Without a Pencil (iPhone, Mac) the laser follows the finger or the pointer.
+        canvasView.drawingPolicy = configuration.fingerDrawing || (configuration.readOnly && laser) ? .anyInput : .pencilOnly
+        let editable = !configuration.readOnly
+        elementTap.isEnabled = editable && !drawingTool
+        elementDoubleTap.isEnabled = editable && configuration.tool == .hand
+        elementPan.isEnabled = editable && configuration.tool == .hand
+        touchObserver.isEnabled = editable && configuration.tool.isInk
+        // Laser strokes are never part of the notebook: keep them out of undo.
+        if laser != laserUndoSuspended {
+            laserUndoSuspended = laser
+            if laser { history.disableUndoRegistration() } else { history.enableUndoRegistration() }
+        }
         // Deferred: this runs inside a SwiftUI update pass.
         let tool = configuration.tool
         Task { [weak self] in
@@ -435,6 +498,11 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
 
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
         guard !isSettingDrawing, isLoaded else { return }
+        if model.tool == .laser || isReadOnly {
+            // Deferred: PencilKit is still inside its own update.
+            Task { [weak self] in self?.fadeLaserStrokes() }
+            return
+        }
         let count = canvasView.drawing.strokes.count
         let added = count == strokeCount + 1
         strokeCount = count
@@ -503,6 +571,12 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
 
     private func pageIndex(at point: CGPoint) -> Int {
         guard !pageRects.isEmpty else { return 0 }
+        if horizontal {
+            for (index, rect) in pageRects.enumerated() where point.x < rect.maxX + pageGap {
+                return index
+            }
+            return pageRects.count - 1
+        }
         for (index, rect) in pageRects.enumerated() where point.y < rect.maxY + pageGap / 2 {
             return index
         }
@@ -512,7 +586,7 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
     private func updateCurrentPage() {
         guard !pageRects.isEmpty else { return }
         let visible = visibleCanvasRect()
-        let index = pageIndex(at: CGPoint(x: visible.midX, y: visible.minY + visible.height * 0.4))
+        let index = pageIndex(at: CGPoint(x: visible.midX, y: horizontal ? visible.midY : visible.minY + visible.height * 0.4))
         if model.currentPageIndex != index { model.currentPageIndex = index }
     }
 
@@ -520,7 +594,9 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
         guard pages.count == pageRects.count, !pages.isEmpty else { return }
         let z = canvasView.zoomScale
         let visible = visibleCanvasRect()
-        let window = visible.insetBy(dx: -visible.width * 0.25, dy: -visible.height * 0.8)
+        let window = horizontal
+            ? visible.insetBy(dx: -visible.width * 0.8, dy: -visible.height * 0.25)
+            : visible.insetBy(dx: -visible.width * 0.25, dy: -visible.height * 0.8)
         let pixelScale = max(traitCollection.displayScale, 1)
 
         CATransaction.begin()
@@ -625,7 +701,11 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
     func scrollToPage(_ index: Int, animated: Bool) {
         guard pageRects.indices.contains(index) else { return }
         let z = canvasView.zoomScale
-        setOffset(y: pageRects[index].minY * z - insets.top - 10, animated: animated)
+        if horizontal {
+            setOffset(y: canvasView.contentOffset.y, x: centeredOffsetX(for: index), animated: animated)
+        } else {
+            setOffset(y: pageRects[index].minY * z - insets.top - 10, animated: animated)
+        }
         if model.currentPageIndex != index { model.currentPageIndex = index }
     }
 
@@ -651,6 +731,53 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
 
     func zoomToFitWidth() {
         canvasView.setZoomScale(fitScale, animated: true)
+        if horizontal { scrollToPage(model.currentPageIndex, animated: true) }
+    }
+
+    /// Content offset that centres page `index` horizontally.
+    private func centeredOffsetX(for index: Int) -> CGFloat {
+        let z = canvasView.zoomScale
+        return pageRects[index].midX * z - canvasView.bounds.width / 2
+    }
+
+    /// Switches between vertical and side-by-side pages, staying on the same page.
+    func applyScrollDirection() {
+        let target = model.isHorizontal
+        guard target != horizontal else { return }
+        let page = model.currentPageIndex
+        if !isReadOnly { commitInk() }
+        horizontal = target
+        canvasView.alwaysBounceVertical = !horizontal
+        canvasView.alwaysBounceHorizontal = horizontal
+        canvasView.showsVerticalScrollIndicator = !horizontal
+        canvasView.decelerationRate = horizontal ? .fast : .normal
+        fitScale = 0
+        rebuild(scrollTo: page)
+    }
+
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        dragStartPage = model.currentPageIndex
+    }
+
+    /// Page turning: at "fit" zoom, a swipe lands exactly on the previous or next page.
+    func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint,
+                                   targetContentOffset: UnsafeMutablePointer<CGPoint>) {
+        guard horizontal, !pageRects.isEmpty, canvasView.zoomScale <= fitScale * 1.08 else { return }
+        let current = dragStartPage
+        var target = current
+        if velocity.x > 0.25 {
+            target = current + 1
+        } else if velocity.x < -0.25 {
+            target = current - 1
+        } else {
+            let z = canvasView.zoomScale
+            let centre = (targetContentOffset.pointee.x + canvasView.bounds.width / 2) / max(z, 0.001)
+            target = pageIndex(at: CGPoint(x: centre, y: pageRects[min(current, pageRects.count - 1)].midY))
+        }
+        target = min(max(target, 0), pageRects.count - 1)
+        let inset = canvasView.contentInset
+        let maxX = max(-inset.left, canvasView.contentSize.width + inset.right - canvasView.bounds.width)
+        targetContentOffset.pointee.x = min(max(centeredOffsetX(for: target), -inset.left), maxX)
     }
 
     // MARK: Undo / redo
@@ -713,6 +840,42 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
         updateUndoState()
     }
 
+    // MARK: Laser pointer
+
+    static let laserColor = UIColor(red: 1, green: 0.23, blue: 0.19, alpha: 1)
+
+    /// Takes the strokes just drawn with the laser off the page and lets them glow and fade.
+    private func fadeLaserStrokes() {
+        let drawing = canvasView.drawing
+        guard drawing.strokes.count > strokeCount else { return }
+        let laser = Array(drawing.strokes[strokeCount...])
+        var restored = drawing
+        restored.strokes = Array(drawing.strokes.prefix(strokeCount))
+        isSettingDrawing = true
+        canvasView.drawing = restored
+        isSettingDrawing = false
+
+        var bounds = CGRect.null
+        for stroke in laser { bounds = bounds.union(stroke.renderBounds) }
+        guard !bounds.isNull else { return }
+        bounds = bounds.insetBy(dx: -6, dy: -6)
+        let z = canvasView.zoomScale
+        let image = PKDrawing(strokes: laser).image(from: bounds, scale: z * max(traitCollection.displayScale, 1))
+        let glow = UIImageView(image: image)
+        glow.frame = scaled(bounds, z)
+        glow.isUserInteractionEnabled = false
+        glow.layer.shadowColor = Self.laserColor.cgColor
+        glow.layer.shadowOpacity = 0.9
+        glow.layer.shadowRadius = 6
+        glow.layer.shadowOffset = .zero
+        canvasView.addSubview(glow)
+        UIView.animate(withDuration: 0.9, delay: 0.7, options: [.curveEaseIn, .allowUserInteraction]) {
+            glow.alpha = 0
+        } completion: { _ in
+            glow.removeFromSuperview()
+        }
+    }
+
     // MARK: Shapes
 
     private func snapLastStrokeIfNeeded(expectedCount: Int) {
@@ -739,6 +902,10 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
     }
 
     private func handlePencilAction(_ action: UIPencilPreferredAction) {
+        if isReadOnly {
+            if action != .ignore { model.select(.laser) }
+            return
+        }
         switch action {
         case .ignore, .runSystemShortcut:
             break
@@ -765,7 +932,7 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         if gestureRecognizer === undoTap || gestureRecognizer === redoTap {
-            return model.settings.tapGesturesForUndo
+            return model.settings.tapGesturesForUndo && !isReadOnly
         }
         guard gestureRecognizer === elementPan else { return true }
         let translation = elementPan.translation(in: canvasView)
@@ -1181,6 +1348,15 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
         }
         layoutPageContent()
         scheduleDetailRefresh()
+    }
+
+    /// Names a page; named pages make up the notebook's outline (« Plan »).
+    func setPageTitle(_ title: String, at index: Int) {
+        guard pages.indices.contains(index) else { return }
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard pages[index].title != trimmed else { return }
+        mutatePages { $0[index].title = trimmed }
+        model.flash(trimmed.isEmpty ? "Titre de la page retiré" : "Page \(index + 1) : « \(trimmed) »")
     }
 
     func toggleBookmark(at index: Int) {

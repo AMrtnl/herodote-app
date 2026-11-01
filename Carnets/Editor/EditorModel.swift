@@ -6,7 +6,7 @@ import Observation
 // MARK: - Tools
 
 enum EditorTool: String, CaseIterable, Identifiable {
-    case pen, pencil, highlighter, eraser, lasso, text, hand
+    case pen, pencil, highlighter, eraser, lasso, text, hand, laser
 
     var id: String { rawValue }
 
@@ -19,6 +19,7 @@ enum EditorTool: String, CaseIterable, Identifiable {
         case .lasso:       return "Lasso"
         case .text:        return "Texte"
         case .hand:        return "Sélection"
+        case .laser:       return "Pointeur laser"
         }
     }
 
@@ -31,6 +32,7 @@ enum EditorTool: String, CaseIterable, Identifiable {
         case .lasso:       return "lasso"
         case .text:        return "character.textbox"
         case .hand:        return "hand.point.up.left"
+        case .laser:       return "laser.burst"
         }
     }
 
@@ -39,6 +41,9 @@ enum EditorTool: String, CaseIterable, Identifiable {
 
     /// Tools that use a colour.
     var usesColor: Bool { isInk }
+
+    /// Tools offered when the notebook is read-only (iPhone, Mac).
+    static let readerTools: [EditorTool] = [.hand, .laser]
 }
 
 /// Everything the canvas needs to configure PencilKit. Value type so SwiftUI can diff it.
@@ -51,6 +56,7 @@ struct ToolConfiguration: Equatable {
     var eraserWidth: CGFloat
     var ruler: Bool
     var fingerDrawing: Bool
+    var readOnly: Bool
 }
 
 enum ToolPresets {
@@ -120,6 +126,12 @@ struct ConversionResult: Identifiable {
     let bounds: CGRect
 }
 
+struct PageTitleRequest: Identifiable {
+    let id = UUID()
+    let pageIndex: Int
+    var title: String
+}
+
 struct SharedFile: Identifiable {
     let id = UUID()
     let url: URL
@@ -141,9 +153,11 @@ struct TemplatePickerRequest: Identifiable {
     let notebookID: UUID
     let store: NotebookStore
     let settings: CarnetsSettings
+    /// iPhone and Mac: view, search, point and export, but never change the notebook.
+    let isReadOnly: Bool
 
     // Tools
-    var tool: EditorTool = .pen
+    var tool: EditorTool
     private(set) var previousTool: EditorTool = .pen
     var ruler = false
     /// Snap every stroke to a shape (in addition to "draw and hold").
@@ -171,6 +185,7 @@ struct TemplatePickerRequest: Identifiable {
     var focusMode = false
     var showPageNavigator = false
     var templatePicker: TemplatePickerRequest?
+    var pageTitleEdit: PageTitleRequest?
     var textEdit: TextEditRequest?
     var conversion: ConversionResult?
     var sharedFile: SharedFile?
@@ -185,6 +200,17 @@ struct TemplatePickerRequest: Identifiable {
         self.notebookID = notebookID
         self.store = store
         self.settings = settings
+        self.isReadOnly = store.isReadOnly
+        self.tool = store.isReadOnly ? .hand : .pen
+    }
+
+    var isHorizontal: Bool { settings.scrollDirection == .horizontal }
+
+    func toggleScrollDirection() {
+        settings.scrollDirection = isHorizontal ? .vertical : .horizontal
+        settings.save()
+        canvas?.applyScrollDirection()
+        flash(isHorizontal ? "Pages côte à côte : feuilletez d’un geste" : "Défilement vertical continu")
     }
 
     var notebook: Notebook? { store.notebook(notebookID) }
@@ -208,11 +234,26 @@ struct TemplatePickerRequest: Identifiable {
             eraserMode: t.eraserMode,
             eraserWidth: ToolPresets.width(for: .eraser, penStyle: t.penStyle, index: t.eraserWidth),
             ruler: ruler,
-            fingerDrawing: settings.fingerDrawing
+            fingerDrawing: settings.fingerDrawing,
+            readOnly: isReadOnly
         )
     }
 
     func select(_ newTool: EditorTool) {
+        if isReadOnly && !EditorTool.readerTools.contains(newTool) { return }
+        if newTool == .laser {
+            if tool == .laser {
+                tool = isReadOnly ? .hand : (previousTool == .laser ? .pen : previousTool)
+                flash("Pointeur laser désactivé")
+            } else {
+                previousTool = tool
+                tool = .laser
+                selectedElementID = nil
+                flash("Pointeur laser : le trait s’efface tout seul")
+            }
+            showToolOptions = false
+            return
+        }
         if newTool == tool {
             showToolOptions.toggle()
             return
@@ -224,6 +265,10 @@ struct TemplatePickerRequest: Identifiable {
     }
 
     func switchToPreviousTool() {
+        if isReadOnly {
+            select(.laser)
+            return
+        }
         let target = previousTool == tool ? .pen : previousTool
         previousTool = tool
         tool = target

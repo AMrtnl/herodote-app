@@ -23,17 +23,26 @@ struct NotebookInfoSheet: View {
         NavigationStack {
             Form {
                 if let notebook {
-                    Section {
-                        TextField("Titre", text: $title)
-                            .font(.headline)
-                            .onSubmit { store.rename(notebookID, to: title) }
-                        Picker("Dossier", selection: Binding(get: { notebook.folderID }, set: { store.move(notebookID, to: $0) })) {
-                            Text("Aucun dossier").tag(Optional<UUID>.none)
-                            ForEach(store.folders) { folder in
-                                Text(folder.name).tag(Optional(folder.id))
-                            }
+                    if store.isReadOnly {
+                        Section {
+                            Text(notebook.title).font(.headline)
+                            LabeledContent("Dossier", value: notebook.folderID.flatMap { store.folder($0)?.name } ?? "Aucun dossier")
+                        } footer: {
+                            Text("\(Platform.readOnlyTitle). \(Platform.readOnlyExplanation)")
                         }
-                        Toggle("Favori", isOn: Binding(get: { notebook.isFavorite }, set: { _ in store.toggleFavorite(notebookID) }))
+                    } else {
+                        Section {
+                            TextField("Titre", text: $title)
+                                .font(.headline)
+                                .onSubmit { store.rename(notebookID, to: title) }
+                            Picker("Dossier", selection: Binding(get: { notebook.folderID }, set: { store.move(notebookID, to: $0) })) {
+                                Text("Aucun dossier").tag(Optional<UUID>.none)
+                                ForEach(store.folders) { folder in
+                                    Text(folder.name).tag(Optional(folder.id))
+                                }
+                            }
+                            Toggle("Favori", isOn: Binding(get: { notebook.isFavorite }, set: { _ in store.toggleFavorite(notebookID) }))
+                        }
                     }
 
                     Section("Informations") {
@@ -54,7 +63,7 @@ struct NotebookInfoSheet: View {
                         LabeledContent("Pages cherchables", value: "\(searchable) / \(notebook.pages.count)")
                     }
 
-                    if notebook.source?.origin == .goodNotes || notebook.source?.origin == .pdf {
+                    if !store.isReadOnly, notebook.source?.origin == .goodNotes || notebook.source?.origin == .pdf {
                         Section {
                             Button {
                                 showUpdatePicker = true
@@ -75,29 +84,31 @@ struct NotebookInfoSheet: View {
                         }
                     }
 
-                    Section {
-                        Button {
-                            recognizer.enqueueAllPages(of: notebookID)
-                            message = "La reconnaissance de l’écriture des pages importées a commencé."
-                        } label: {
-                            Label("Rendre les pages importées cherchables", systemImage: "text.viewfinder")
-                        }
-                        .disabled(!notebook.pages.contains { !$0.background.isTemplate })
-                        Button {
-                            HandwritingIndexer.shared.schedule(notebookID: notebookID, pageIDs: notebook.pages.map(\.id))
-                            message = "L’écriture faite dans Carnets va être réindexée."
-                        } label: {
-                            Label("Réindexer l’écriture Carnets", systemImage: "pencil.and.scribble")
-                        }
-                        if recognizer.remaining > 0 {
-                            HStack {
-                                ProgressView()
-                                Text("\(recognizer.remaining) page\(recognizer.remaining > 1 ? "s" : "") en cours de reconnaissance")
-                                    .font(.callout)
+                    if !store.isReadOnly {
+                        Section {
+                            Button {
+                                recognizer.enqueueAllPages(of: notebookID)
+                                message = "La reconnaissance de l’écriture des pages importées a commencé."
+                            } label: {
+                                Label("Rendre les pages importées cherchables", systemImage: "text.viewfinder")
                             }
+                            .disabled(!notebook.pages.contains { !$0.background.isTemplate })
+                            Button {
+                                HandwritingIndexer.shared.schedule(notebookID: notebookID, pageIDs: notebook.pages.map(\.id))
+                                message = "L’écriture faite dans Carnets va être réindexée."
+                            } label: {
+                                Label("Réindexer l’écriture Carnets", systemImage: "pencil.and.scribble")
+                            }
+                            if recognizer.remaining > 0 {
+                                HStack {
+                                    ProgressView()
+                                    Text("\(recognizer.remaining) page\(recognizer.remaining > 1 ? "s" : "") en cours de reconnaissance")
+                                        .font(.callout)
+                                }
+                            }
+                        } header: {
+                            Text("Recherche")
                         }
-                    } header: {
-                        Text("Recherche")
                     }
 
                     Section {
@@ -126,7 +137,7 @@ struct NotebookInfoSheet: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("OK") {
-                        store.rename(notebookID, to: title)
+                        if !store.isReadOnly { store.rename(notebookID, to: title) }
                         dismiss()
                     }
                 }
@@ -212,13 +223,14 @@ struct NotebookInfoSheet: View {
         guard let latest = store.notebook(notebook.id) else { return }
         let files = store.files(for: notebook.id)
         let url = PageRenderer.temporaryExportURL(latest.title, ext: "pdf")
+        let readOnly = store.isReadOnly
         busy = "Préparation du PDF…"
         Task {
             do {
                 try await Task.detached(priority: .userInitiated) {
                     try PageRenderer.exportPDF(notebook: latest, files: files, drawings: nil, to: url)
                     // Remember what was printed, so the way back from GoodNotes doesn't double it.
-                    FlattenedExport.record(latest, files: files).save(to: files)
+                    if !readOnly { FlattenedExport.record(latest, files: files).save(to: files) }
                 }.value
                 sharedFile = SharedFile(url: url)
             } catch {

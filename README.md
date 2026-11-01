@@ -5,19 +5,25 @@ This Xcode project (`Untitled Project.xcodeproj`) contains two apps:
 | Target | Platform | What it is |
 |---|---|---|
 | **MyApp** (Hérodote) | macOS | The typed-writing app: groups, sheets, rich text, links, annotations, Élan stats. |
-| **Carnets** | iPadOS / iOS (runs on Apple-silicon Macs as "Designed for iPad") | A handwritten-notebook app in the spirit of reMarkable and GoodNotes. |
+| **Carnets** | iPadOS / iOS (runs on Apple-silicon Macs as "Designed for iPad") | Three apps in one: handwritten notebooks (GoodNotes-style), Obsidian-style notes and Ulysses-style writing projects. |
 
 ## Carnets: GoodNotes + Obsidian + Ulysses in one app
 
-Carnets combines three ways of writing, all stored in **one Obsidian-compatible vault** that you can host on your own server:
+Carnets is three apps in one. Each has its own tab (⌘1, ⌘2, ⌘3), its own sidebar and its own navigation, and all three store their files in **one Obsidian-compatible vault** that you can host on your own server:
 
-| Space | Inspired by | What you get |
+| Tab | Inspired by | What you get |
 |---|---|---|
+| **Carnets** | GoodNotes / reMarkable | The handwritten-notebook app: library with covers and folders, Apple Pencil handwriting, paper templates, PDF annotation, shape snapping, laser pointer, page-by-page or continuous scrolling, page outline, on-device handwriting recognition, GoodNotes import (details below) |
 | **Notes** | Obsidian | Markdown notes with `[[wikilinks]]`, backlinks, #tags, front matter, a graph view, daily notes, a quick switcher, and links that update everywhere when you rename a note |
 | **Écriture** | Ulysses | Writing projects made of ordered sheets, word goals per project and per sheet, a deadline, a focus/typewriter writing mode, Élan writing stats, and assembling a whole project to PDF, Markdown or HTML |
-| **Carnets manuscrits** | GoodNotes / reMarkable | Apple Pencil handwriting, paper templates, PDF annotation, shape snapping, on-device handwriting recognition (details below) |
 
 Choose the **Carnets** scheme, pick an iPad (a real device with an Apple Pencil gives the best experience), and run. It needs Xcode 27 / iOS 27, the same SDK as the rest of the project.
+
+### Write on iPad, read everywhere
+
+Handwritten notebooks are **created and edited on iPad only**. On **iPhone** and on **Mac** ("Designed for iPad") they open **read-only**: the library, pages, zoom, page-by-page mode, page grid, outline, bookmarks, search in the handwriting, the laser pointer, copying the handwriting as text and PDF/image export all work, but nothing is ever written to the notebook. The iPad stays the only device that changes a notebook, so syncing never has to merge two versions of the same ink. Notebooks reach the other devices through the vault (your WebDAV server or a synced folder), and every notebook also exists as a Markdown note with its pages as images, readable in Obsidian on any platform. Notes and Écriture stay fully editable everywhere.
+
+To try the reader on an iPad simulator, add the launch argument `-carnets.readOnly YES` to the scheme.
 
 ### The vault (your files, your server)
 
@@ -49,8 +55,8 @@ Your GoodNotes notebooks can live in Carnets alongside native ones, and you can 
 
 - **Import**: in GoodNotes, choose Share › Export › **PDF**; a folder exports as a ZIP. In Carnets, open "Importer depuis GoodNotes…" and pick PDFs, ZIP archives or whole folders. GoodNotes folders are recreated (nested folders appear as "Cours › Philosophie"), and PDFs exported by GoodNotes are detected from their metadata.
 - **Searchable handwriting**: GoodNotes flattens handwriting into the PDF, so Carnets reads it with on-device text recognition (Vision). It can then be found in search, and it appears in the notebook's note in the vault.
-- **Update in place**: keep writing in GoodNotes, export again, and import with "Mettre à jour" (or use Infos › "Mettre à jour depuis un export plus récent…"). The pages are replaced, and the ink, text boxes, photos and bookmarks you added in Carnets stay on the same page numbers.
-- **Back to GoodNotes**: Infos › "Envoyer vers GoodNotes (PDF)" exports the notebook with all its writing, including what you added in Carnets. "Partager le PDF d'origine" returns the original export.
+- **Update in place**: keep writing in GoodNotes, export again, and import with "Mettre à jour" (or use Infos › "Mettre à jour depuis un export plus récent…"). Each page is matched with its new version by its page number in the PDF, so the ink, text boxes, photos, titles and bookmarks you added in Carnets stay on the right page, pages you added in Carnets stay where they are, and pages added in GoodNotes are inserted in place. Same-named notebooks in different folders are told apart.
+- **Back to GoodNotes**: Infos › "Envoyer vers GoodNotes (PDF)" exports the notebook with all its writing, including what you added in Carnets, under the notebook's name. Carnets remembers what it printed into that PDF: when the GoodNotes export of it comes back, your Carnets ink is not shown twice. "Partager le PDF d'origine" returns the original export under its original name.
 - **Manage many notebooks**: a "Importés de GoodNotes" section, a GoodNotes badge on covers, and multi-selection to move, favourite, **merge** (in display order, originals kept), export or delete several notebooks at once.
 - `.goodnotes` files use GoodNotes' own format, which can't be read reliably; the import explains how to export them as PDF instead.
 
@@ -73,11 +79,13 @@ Your GoodNotes notebooks can live in Carnets alongside native ones, and you can 
 - Text boxes (4 font styles, size, colour) and photos placed on the page: move, resize, duplicate, bring to front
 - Paper templates: blank, lined, narrow lined, **Seyès**, 5 mm grid, 1 cm grid, dot grid, Cornell, checklist, music staff
 - Paper colours: white, ivory, "digital ink" grey, yellow, slate, night. Formats: A4, A5, Letter, 3:4 tablet, square, portrait or landscape
-- Pages scroll continuously and zoom from 50 % to 600 %; page backgrounds and PDFs re-render sharply at any zoom
+- Pages scroll continuously, or **side by side, one page at a time** (swipe to turn the page), and zoom from 50 % to 600 %; page backgrounds and PDFs re-render sharply at any zoom
+- **Laser pointer**: point at the page during a presentation or a call; the glowing red trail fades by itself and is never saved (also on iPhone and Mac)
 - **Mode papier**: a distraction-free, full-screen mode in the spirit of reMarkable
 
 **Pages**
 - Thumbnail navigator: jump, drag to reorder, insert before or after, duplicate, delete, bookmarks
+- **Outline (« Plan »)**: name pages to build the notebook's table of contents; titles show in the page indicator and become headings in the notebook's vault note
 - Change the template or paper of one page or of all pages
 - Add pages from a PDF or from scans in the middle of a notebook
 
@@ -96,8 +104,10 @@ Your GoodNotes notebooks can live in Carnets alongside native ones, and you can 
 Carnets/
   CarnetsApp.swift            App entry: environment, sync on activation
   App/
-    AppRouter.swift           Sections, navigation routes, carnets:// URL handling
-    RootView.swift            Unified sidebar (Coffre / Écriture / Carnets), quick switcher, sync status
+    AppRouter.swift           Spaces (tabs), per-space sections and navigation, carnets:// URLs, reading positions
+    RootView.swift            TabView Carnets / Notes / Écriture, quick switcher, sync status
+    Sidebars.swift            One sidebar per space; read-only banner
+    Platform.swift            Where notebooks can be edited (iPad) and where they are read-only
   Vault/
     VaultModel.swift          Vault layout, notes, Markdown parsing (links, tags, front matter), scanner
     VaultStore.swift          Index, backlinks, link-updating rename, trash, daily notes, writing projects
@@ -115,6 +125,8 @@ Carnets/
     Notebook.swift            Notebook, NotebookPage, PageElement, templates, paper, formats, covers
     NotebookStore.swift       @Observable library: CRUD, folders, import, debounced JSON saves
     NotebookFiles.swift       On-disk layout, drawing I/O, PDF/image importers
+    NotebookRoundTrip.swift   Page matching for newer exports; GoodNotes round trips without doubled ink
+    GoodNotesImport.swift     ZIP reader, GoodNotes export detection, import candidates
     CarnetsSettings.swift     Preferences and tool settings (UserDefaults)
   Rendering/
     PageRenderer.swift        Thread-safe drawing of paper, templates, PDF pages, elements, ink; PDF export

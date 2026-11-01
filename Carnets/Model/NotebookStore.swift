@@ -17,6 +17,8 @@ import PencilKit
     @ObservationIgnored private(set) var rootURL: URL
     @ObservationIgnored private let ioQueue = DispatchQueue(label: "carnets.store.io", qos: .utility)
     @ObservationIgnored private var pendingSaves: [UUID: Task<Void, Never>] = [:]
+    /// iPhone and Mac read notebooks without ever writing them (see `Platform`).
+    let isReadOnly = !Platform.canEditNotebooks
 
     private init() {
         rootURL = VaultStore.shared.url(for: VaultPaths.carnetsData)
@@ -82,6 +84,7 @@ import PencilKit
     /// Mutates a notebook in place and schedules a save.
     /// `touch` updates the modification date (used for sorting).
     func update(_ id: UUID, touch: Bool = true, _ body: (inout Notebook) -> Void) {
+        guard !isReadOnly else { return }
         guard let index = notebooks.firstIndex(where: { $0.id == id }) else { return }
         body(&notebooks[index])
         if touch { notebooks[index].modifiedAt = .now }
@@ -238,6 +241,7 @@ import PencilKit
     /// Combines several notebooks, in order, into a new one. The originals are kept.
     @discardableResult
     func merge(_ ids: [UUID], title: String) -> Notebook? {
+        guard !isReadOnly else { return nil }
         let sources = ids.compactMap { notebook($0) }
         guard sources.count >= 2, let first = sources.first else { return nil }
         for source in sources { flush(source.id) }
@@ -324,6 +328,7 @@ import PencilKit
 
     @discardableResult
     func duplicate(_ id: UUID) -> Notebook? {
+        guard !isReadOnly else { return nil }
         guard let original = notebook(id) else { return nil }
         flush(id)
         var copy = original
@@ -344,6 +349,7 @@ import PencilKit
     }
 
     func delete(_ id: UUID) {
+        guard !isReadOnly else { return }
         pendingSaves[id]?.cancel()
         pendingSaves[id] = nil
         notebooks.removeAll { $0.id == id }
@@ -366,6 +372,7 @@ import PencilKit
     }
 
     func renameFolder(_ id: UUID, to name: String) {
+        guard !isReadOnly else { return }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let index = folders.firstIndex(where: { $0.id == id }) else { return }
         folders[index].name = trimmed
@@ -374,6 +381,7 @@ import PencilKit
 
     /// Deletes the folder; its notebooks move back to the library root.
     func deleteFolder(_ id: UUID) {
+        guard !isReadOnly else { return }
         folders.removeAll { $0.id == id }
         for notebook in notebooks where notebook.folderID == id {
             move(notebook.id, to: nil)
@@ -420,6 +428,7 @@ import PencilKit
 
     /// Writes ink for a notebook on the store's serial I/O queue (keeps writes ordered).
     func writeDrawings(_ drawings: [UUID: Data], notebookID: UUID) {
+        guard !isReadOnly else { return }
         guard !drawings.isEmpty else { return }
         let files = self.files(for: notebookID)
         ioQueue.async {
@@ -429,6 +438,7 @@ import PencilKit
 
     /// Removes drawings and assets no page references any more.
     func collectGarbage(_ id: UUID) {
+        guard !isReadOnly else { return }
         guard let notebook = notebook(id) else { return }
         var drawingNames = Set<String>()
         var assetNames = Set<String>()
@@ -458,6 +468,7 @@ import PencilKit
     }
 
     private func insert(_ notebook: Notebook) {
+        guard !isReadOnly else { return }
         notebooks.append(notebook)
         files(for: notebook.id).createDirectories()
         writeMetadata(notebook.id)
@@ -465,6 +476,7 @@ import PencilKit
 
     private func writeMetadata(_ id: UUID) {
         pendingSaves[id] = nil
+        guard !isReadOnly else { return }
         guard let notebook = notebook(id), let data = try? Self.encoder().encode(notebook) else { return }
         let files = self.files(for: id)
         ioQueue.async {
@@ -476,6 +488,7 @@ import PencilKit
     }
 
     private func saveLibrary() {
+        guard !isReadOnly else { return }
         guard let data = try? Self.encoder().encode(LibraryIndex(folders: folders)) else { return }
         let url = libraryURL
         ioQueue.async {
@@ -495,7 +508,7 @@ import PencilKit
             guard let data = try? Data(contentsOf: directory.appendingPathComponent("notebook.json")) else { return nil }
             return try? decoder.decode(Notebook.self, from: data)
         }
-        if notebooks.isEmpty && !UserDefaults.standard.bool(forKey: "carnets.seeded") {
+        if notebooks.isEmpty && !isReadOnly && !UserDefaults.standard.bool(forKey: "carnets.seeded") {
             UserDefaults.standard.set(true, forKey: "carnets.seeded")
             seedWelcomeNotebook()
         }

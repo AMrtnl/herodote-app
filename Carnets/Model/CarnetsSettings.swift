@@ -89,6 +89,24 @@ nonisolated struct RecognitionLanguage: Identifiable, Hashable, Sendable {
     ]
 }
 
+// MARK: - Page scrolling
+
+enum ScrollDirection: String, CaseIterable, Identifiable {
+    /// Pages one below the other, scrolled continuously.
+    case vertical
+    /// Pages side by side, turned one at a time.
+    case horizontal
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .vertical:   return "Verticale (continue)"
+        case .horizontal: return "Horizontale (page à page)"
+        }
+    }
+}
+
 // MARK: - CarnetsSettings
 
 @Observable final class CarnetsSettings {
@@ -106,6 +124,7 @@ nonisolated struct RecognitionLanguage: Identifiable, Hashable, Sendable {
     var defaultPaper: PaperStyle
     var defaultFormat: PageFormat
     var librarySort: LibrarySort
+    var scrollDirection: ScrollDirection
     var tools: ToolSettings
 
     private let defaults = UserDefaults.standard
@@ -120,6 +139,7 @@ nonisolated struct RecognitionLanguage: Identifiable, Hashable, Sendable {
         defaultPaper = d.string(forKey: Keys.paper).flatMap(PaperStyle.init(rawValue:)) ?? .white
         defaultFormat = d.string(forKey: Keys.format).flatMap(PageFormat.init(rawValue:)) ?? .a4
         librarySort = d.string(forKey: Keys.sort).flatMap(LibrarySort.init(rawValue:)) ?? .modified
+        scrollDirection = d.string(forKey: Keys.scroll).flatMap(ScrollDirection.init(rawValue:)) ?? .vertical
         if let data = d.data(forKey: Keys.tools),
            let decoded = try? JSONDecoder().decode(ToolSettings.self, from: data) {
             tools = decoded
@@ -137,6 +157,7 @@ nonisolated struct RecognitionLanguage: Identifiable, Hashable, Sendable {
         defaults.set(defaultPaper.rawValue, forKey: Keys.paper)
         defaults.set(defaultFormat.rawValue, forKey: Keys.format)
         defaults.set(librarySort.rawValue, forKey: Keys.sort)
+        defaults.set(scrollDirection.rawValue, forKey: Keys.scroll)
         if let data = try? JSONEncoder().encode(tools) {
             defaults.set(data, forKey: Keys.tools)
         }
@@ -163,6 +184,7 @@ nonisolated struct RecognitionLanguage: Identifiable, Hashable, Sendable {
         static let paper = "carnets.defaultPaper"
         static let format = "carnets.defaultFormat"
         static let sort = "carnets.librarySort"
+        static let scroll = "carnets.scrollDirection"
         static let tools = "carnets.tools"
     }
 }

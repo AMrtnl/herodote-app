@@ -49,6 +49,7 @@ nonisolated enum PageTextRecognizer {
 
     /// Queues pages whose background (PDF or scan) should be read.
     func enqueue(notebookID: UUID, pageIDs: [UUID]) {
+        guard !NotebookStore.shared.isReadOnly else { return }
         for page in pageIDs where !queue.contains(where: { $0.notebook == notebookID && $0.page == page }) {
             queue.append((notebook: notebookID, page: page))
         }

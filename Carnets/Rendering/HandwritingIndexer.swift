@@ -19,6 +19,8 @@ final class HandwritingIndexer {
 
     /// Queues pages for (re)recognition. `drawings` lets the editor hand over unsaved ink.
     func schedule(notebookID: UUID, pageIDs: some Sequence<UUID>, drawings: [UUID: PKDrawing] = [:]) {
+        // Readers (iPhone, Mac) use the recognition done on the iPad.
+        guard !NotebookStore.shared.isReadOnly else { return }
         queue[notebookID, default: []].formUnion(pageIDs)
         for (id, drawing) in drawings { inMemory[id] = drawing }
         startIfNeeded()

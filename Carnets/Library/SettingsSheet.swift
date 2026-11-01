@@ -30,48 +30,62 @@ struct SettingsSheet: View {
                     Text("Où sont stockés vos notes, projets et carnets, et la synchronisation avec votre serveur.")
                 }
                 Section {
-                    Toggle("Dessiner avec le doigt", isOn: $settings.fingerDrawing)
-                    Toggle("Maintenir la pointe pour une forme parfaite", isOn: $settings.holdToSnapShapes)
-                    Toggle("Toucher avec 2 doigts pour annuler, 3 pour rétablir", isOn: $settings.tapGesturesForUndo)
+                    Picker("Défilement des pages", selection: $settings.scrollDirection) {
+                        ForEach(ScrollDirection.allCases) { Text($0.label).tag($0) }
+                    }
                 } header: {
-                    Text("Écriture")
+                    Text("Lecture des carnets")
                 } footer: {
-                    Text("Le double-toucher et la pression de l’Apple Pencil suivent les réglages de l’Apple Pencil dans Réglages.")
+                    Text(NotebookStore.shared.isReadOnly
+                         ? "\(Platform.readOnlyTitle). \(Platform.readOnlyExplanation)"
+                         : "Horizontal : une page à la fois, feuilletée d’un geste, comme un cahier. Les carnets s’ouvrent aussi en lecture seule sur iPhone et Mac.")
                 }
 
-                Section {
-                    ForEach(availableLanguages) { language in
-                        Toggle(language.label, isOn: languageBinding(language.code))
+                if !NotebookStore.shared.isReadOnly {
+                    Section {
+                        Toggle("Dessiner avec le doigt", isOn: $settings.fingerDrawing)
+                        Toggle("Maintenir la pointe pour une forme parfaite", isOn: $settings.holdToSnapShapes)
+                        Toggle("Toucher avec 2 doigts pour annuler, 3 pour rétablir", isOn: $settings.tapGesturesForUndo)
+                    } header: {
+                        Text("Écriture")
+                    } footer: {
+                        Text("Le double-toucher et la pression de l’Apple Pencil suivent les réglages de l’Apple Pencil dans Réglages.")
                     }
-                    Button {
-                        HandwritingIndexer.shared.reindexEverything()
-                        reindexed = true
-                    } label: {
-                        Label(reindexed ? "Réindexation en cours…" : "Réindexer toutes les notes",
-                              systemImage: "arrow.triangle.2.circlepath")
-                    }
-                    .disabled(reindexed)
-                } header: {
-                    Text("Reconnaissance de l’écriture")
-                } footer: {
-                    Text("Votre écriture est reconnue sur l’appareil pour la recherche et la conversion en texte. Rien ne quitte votre iPad.")
-                }
 
-                Section("Nouveaux carnets") {
-                    Picker("Modèle", selection: $settings.defaultTemplate) {
-                        ForEach(PageTemplate.allCases) { Text($0.label).tag($0) }
+                    Section {
+                        ForEach(availableLanguages) { language in
+                            Toggle(language.label, isOn: languageBinding(language.code))
+                        }
+                        Button {
+                            HandwritingIndexer.shared.reindexEverything()
+                            reindexed = true
+                        } label: {
+                            Label(reindexed ? "Réindexation en cours…" : "Réindexer toutes les notes",
+                                  systemImage: "arrow.triangle.2.circlepath")
+                        }
+                        .disabled(reindexed)
+                    } header: {
+                        Text("Reconnaissance de l’écriture")
+                    } footer: {
+                        Text("Votre écriture est reconnue sur l’appareil pour la recherche et la conversion en texte. Rien ne quitte votre iPad.")
                     }
-                    Picker("Papier", selection: $settings.defaultPaper) {
-                        ForEach(PaperStyle.allCases) { Text($0.label).tag($0) }
-                    }
-                    Picker("Format", selection: $settings.defaultFormat) {
-                        ForEach(PageFormat.allCases) { Text($0.label).tag($0) }
+
+                    Section("Nouveaux carnets") {
+                        Picker("Modèle", selection: $settings.defaultTemplate) {
+                            ForEach(PageTemplate.allCases) { Text($0.label).tag($0) }
+                        }
+                        Picker("Papier", selection: $settings.defaultPaper) {
+                            ForEach(PaperStyle.allCases) { Text($0.label).tag($0) }
+                        }
+                        Picker("Format", selection: $settings.defaultFormat) {
+                            ForEach(PageFormat.allCases) { Text($0.label).tag($0) }
+                        }
                     }
                 }
 
                 Section("À propos") {
                     LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0")
-                    Text("Vos carnets sont enregistrés sur cet appareil. Exportez-les en PDF pour les partager ou les sauvegarder.")
+                    Text("Notes, projets et carnets sont des fichiers ordinaires dans votre coffre (Markdown, JSON, PDF, images) : rien n’est enfermé dans l’app. Exportez un carnet en PDF pour le partager.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

@@ -19,6 +19,8 @@ final class NotebookVaultBridge {
     private var worker: Task<Void, Never>?
 
     func schedule(_ id: UUID) {
+        // The iPad writes the notes; readers receive them through sync.
+        guard !NotebookStore.shared.isReadOnly else { return }
         pending.insert(id)
         worker?.cancel()
         worker = Task { [weak self] in
@@ -30,6 +32,7 @@ final class NotebookVaultBridge {
 
     /// Exports every notebook (e.g. after the vault moved).
     func exportAll() {
+        guard !NotebookStore.shared.isReadOnly else { return }
         for notebook in NotebookStore.shared.notebooks { pending.insert(notebook.id) }
         schedule(pending.first ?? UUID())
     }
@@ -106,7 +109,8 @@ final class NotebookVaultBridge {
         lines.append("")
         for (index, page) in notebook.pages.enumerated() {
             guard let image = images[page.id] else { continue }
-            lines.append("## Page \(index + 1)\(page.isBookmarked ? " 🔖" : "")")
+            let title = page.title.isEmpty ? "" : " — \(page.title)"
+            lines.append("## Page \(index + 1)\(title)\(page.isBookmarked ? " 🔖" : "")")
             lines.append("![Page \(index + 1)](<\(data)/pages/\(image)>)")
             let typed = page.elements.filter { $0.kind == .text }.map(\.text).filter { !$0.isEmpty }
             let recognized = page.recognizedText.trimmingCharacters(in: .whitespacesAndNewlines)

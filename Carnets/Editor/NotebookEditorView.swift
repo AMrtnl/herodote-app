@@ -19,6 +19,7 @@ struct NotebookEditorView: View {
     @State private var showRename = false
     @State private var renameText = ""
     @State private var confirmClear = false
+    @State private var pageTitleText = ""
 
     init(notebookID: UUID, onClose: @escaping () -> Void) {
         self.notebookID = notebookID
@@ -26,7 +27,7 @@ struct NotebookEditorView: View {
         _model = State(initialValue: EditorModel(notebookID: notebookID))
     }
 
-    private var paletteInset: CGFloat { model.focusMode ? 0 : 66 }
+    private var paletteInset: CGFloat { model.focusMode ? 0 : (model.isReadOnly ? 60 : 66) }
 
     var body: some View {
         NavigationStack {
@@ -43,7 +44,11 @@ struct NotebookEditorView: View {
 
                 if !model.focusMode {
                     VStack(spacing: 10) {
-                        ToolPaletteView(model: model)
+                        if model.isReadOnly {
+                            ReaderBar(model: model)
+                        } else {
+                            ToolPaletteView(model: model)
+                        }
                         contextualBar
                     }
                     .padding(.top, 8)
@@ -62,11 +67,13 @@ struct NotebookEditorView: View {
             .navigationTitle(model.notebook?.title ?? "")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarTitleMenu {
-                Button {
-                    renameText = model.notebook?.title ?? ""
-                    showRename = true
-                } label: {
-                    Label("Renommer", systemImage: "pencil")
+                if !model.isReadOnly {
+                    Button {
+                        renameText = model.notebook?.title ?? ""
+                        showRename = true
+                    } label: {
+                        Label("Renommer", systemImage: "pencil")
+                    }
                 }
                 Button {
                     model.exportPDF()
@@ -123,6 +130,22 @@ struct NotebookEditorView: View {
             }
             .ignoresSafeArea()
         }
+        .alert("Nommer la page \((model.pageTitleEdit?.pageIndex ?? 0) + 1)", isPresented: Binding(
+            get: { model.pageTitleEdit != nil },
+            set: { if !$0 { model.pageTitleEdit = nil } }
+        )) {
+            TextField("Titre de la page", text: $pageTitleText)
+            Button("OK") {
+                if let request = model.pageTitleEdit { model.canvas?.setPageTitle(pageTitleText, at: request.pageIndex) }
+                model.pageTitleEdit = nil
+            }
+            Button("Annuler", role: .cancel) { model.pageTitleEdit = nil }
+        } message: {
+            Text("Les pages nommées forment le plan du carnet, et leurs titres apparaissent dans sa note du coffre.")
+        }
+        .onChange(of: model.pageTitleEdit?.id) {
+            pageTitleText = model.pageTitleEdit?.title ?? ""
+        }
         .alert("Renommer le carnet", isPresented: $showRename) {
             TextField("Titre", text: $renameText)
             Button("Renommer") { model.store.rename(notebookID, to: renameText) }
@@ -155,22 +178,24 @@ struct NotebookEditorView: View {
                 Label("Bibliothèque", systemImage: "chevron.backward")
             }
         }
-        ToolbarItemGroup(placement: .topBarTrailing) {
-            Button {
-                model.canvas?.undo()
-            } label: {
-                Label("Annuler", systemImage: "arrow.uturn.backward")
-            }
-            .disabled(!model.canUndo)
-            .keyboardShortcut("z", modifiers: .command)
+        if !model.isReadOnly {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button {
+                    model.canvas?.undo()
+                } label: {
+                    Label("Annuler", systemImage: "arrow.uturn.backward")
+                }
+                .disabled(!model.canUndo)
+                .keyboardShortcut("z", modifiers: .command)
 
-            Button {
-                model.canvas?.redo()
-            } label: {
-                Label("Rétablir", systemImage: "arrow.uturn.forward")
+                Button {
+                    model.canvas?.redo()
+                } label: {
+                    Label("Rétablir", systemImage: "arrow.uturn.forward")
+                }
+                .disabled(!model.canRedo)
+                .keyboardShortcut("z", modifiers: [.command, .shift])
             }
-            .disabled(!model.canRedo)
-            .keyboardShortcut("z", modifiers: [.command, .shift])
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
             Button {
@@ -180,7 +205,9 @@ struct NotebookEditorView: View {
             }
             .keyboardShortcut("f", modifiers: .command)
 
-            addMenu
+            if !model.isReadOnly {
+                addMenu
+            }
 
             Button {
                 model.showPageNavigator = true
@@ -234,7 +261,74 @@ struct NotebookEditorView: View {
         }
     }
 
+    private var scrollDirectionToggle: some View {
+        Toggle(isOn: Binding(get: { model.isHorizontal }, set: { _ in model.toggleScrollDirection() })) {
+            Label("Pages côte à côte", systemImage: "rectangle.split.2x1")
+        }
+    }
+
+    private var exportSection: some View {
+        Section("Exporter") {
+            Button {
+                model.exportPDF()
+            } label: {
+                Label("Carnet entier (PDF)", systemImage: "square.and.arrow.up")
+            }
+            Button {
+                model.exportPDF(pageIndices: [model.currentPageIndex])
+            } label: {
+                Label("Cette page (PDF)", systemImage: "doc")
+            }
+            Button {
+                model.exportCurrentPageImage()
+            } label: {
+                Label("Cette page (image)", systemImage: "photo")
+            }
+        }
+    }
+
+    @ViewBuilder
     private var moreMenu: some View {
+        if model.isReadOnly { readerMenu } else { editingMenu }
+    }
+
+    /// iPhone and Mac: everything that reads, nothing that writes.
+    private var readerMenu: some View {
+        Menu {
+            Section {
+                scrollDirectionToggle
+                Button {
+                    model.focusMode = true
+                } label: {
+                    Label("Mode papier", systemImage: "rectangle.portrait")
+                }
+                Button {
+                    model.canvas?.zoomToFitWidth()
+                } label: {
+                    Label(model.isHorizontal ? "Page entière" : "Ajuster à la largeur", systemImage: "arrow.left.and.right")
+                }
+            }
+            Section("Page \(model.currentPageIndex + 1)") {
+                Button {
+                    model.copyCurrentPageText()
+                } label: {
+                    Label("Copier l’écriture en texte", systemImage: "text.viewfinder")
+                }
+            }
+            Section("Coffre") {
+                Button {
+                    openLinkedNote()
+                } label: {
+                    Label("Note liée dans le coffre", systemImage: "doc.text")
+                }
+            }
+            exportSection
+        } label: {
+            Label("Plus", systemImage: "ellipsis")
+        }
+    }
+
+    private var editingMenu: some View {
         Menu {
             Section {
                 Toggle(isOn: Binding(get: { model.settings.fingerDrawing },
@@ -244,6 +338,7 @@ struct NotebookEditorView: View {
                 Toggle(isOn: $model.alwaysSnapShapes) {
                     Label("Formes automatiques", systemImage: "circle.square")
                 }
+                scrollDirectionToggle
                 Button {
                     model.focusMode = true
                 } label: {
@@ -252,10 +347,17 @@ struct NotebookEditorView: View {
                 Button {
                     model.canvas?.zoomToFitWidth()
                 } label: {
-                    Label("Ajuster à la largeur", systemImage: "arrow.left.and.right")
+                    Label(model.isHorizontal ? "Page entière" : "Ajuster à la largeur", systemImage: "arrow.left.and.right")
                 }
             }
             Section("Page \(model.currentPageIndex + 1)") {
+                Button {
+                    model.pageTitleEdit = PageTitleRequest(pageIndex: model.currentPageIndex,
+                                                           title: model.currentPage?.title ?? "")
+                } label: {
+                    Label(model.currentPage?.title.isEmpty == false ? "Renommer la page…" : "Nommer la page…",
+                          systemImage: "list.bullet.indent")
+                }
                 Button {
                     model.canvas?.toggleBookmark(at: model.currentPageIndex)
                 } label: {
@@ -285,23 +387,7 @@ struct NotebookEditorView: View {
                     Label("Note liée dans le coffre", systemImage: "doc.text")
                 }
             }
-            Section("Exporter") {
-                Button {
-                    model.exportPDF()
-                } label: {
-                    Label("Carnet entier (PDF)", systemImage: "square.and.arrow.up")
-                }
-                Button {
-                    model.exportPDF(pageIndices: [model.currentPageIndex])
-                } label: {
-                    Label("Cette page (PDF)", systemImage: "doc")
-                }
-                Button {
-                    model.exportCurrentPageImage()
-                } label: {
-                    Label("Cette page (image)", systemImage: "photo")
-                }
-            }
+            exportSection
         } label: {
             Label("Plus", systemImage: "ellipsis")
         }
@@ -314,6 +400,8 @@ struct NotebookEditorView: View {
         if model.isSearching {
             NotebookSearchBar(model: model)
                 .transition(.move(edge: .top).combined(with: .opacity))
+        } else if model.isReadOnly {
+            EmptyView()
         } else if model.selectedElementID != nil {
             ElementSelectionBar(model: model)
                 .transition(.scale(scale: 0.9).combined(with: .opacity))
@@ -337,6 +425,12 @@ struct NotebookEditorView: View {
             HStack(spacing: 6) {
                 if model.currentPage?.isBookmarked == true {
                     Image(systemName: "bookmark.fill").foregroundStyle(.orange)
+                }
+                if let title = model.currentPage?.title, !title.isEmpty {
+                    Text(title)
+                        .lineLimit(1)
+                        .frame(maxWidth: 220, alignment: .trailing)
+                    Text("·").foregroundStyle(.secondary)
                 }
                 Text("\(min(model.currentPageIndex + 1, max(model.pageCount, 1))) / \(max(model.pageCount, 1))")
                     .monospacedDigit()
