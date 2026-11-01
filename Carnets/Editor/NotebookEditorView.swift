@@ -278,6 +278,13 @@ struct NotebookEditorView: View {
                     Label("Effacer l’encre de la page", systemImage: "eraser.line.dashed")
                 }
             }
+            Section("Coffre") {
+                Button {
+                    openLinkedNote()
+                } label: {
+                    Label("Note liée dans le coffre", systemImage: "doc.text")
+                }
+            }
             Section("Exporter") {
                 Button {
                     model.exportPDF()
@@ -400,6 +407,21 @@ struct NotebookEditorView: View {
     private func close() {
         model.canvas?.finish()
         onClose()
+    }
+
+    /// Closes the notebook and opens its Markdown note (page images + recognised text),
+    /// where typed notes and [[links]] can be added around the generated part.
+    private func openLinkedNote() {
+        model.canvas?.finish()
+        let id = notebookID
+        onClose()
+        Task {
+            NotebookVaultBridge.shared.schedule(id)
+            try? await Task.sleep(for: .seconds(3))
+            if let path = NotebookVaultBridge.shared.companionPath(for: id) {
+                AppRouter.shared.openNote(path)
+            }
+        }
     }
 
     private func importPDFPages(_ url: URL) {

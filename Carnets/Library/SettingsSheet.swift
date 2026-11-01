@@ -21,6 +21,15 @@ struct SettingsSheet: View {
         NavigationStack {
             Form {
                 Section {
+                    NavigationLink {
+                        VaultSettingsView()
+                    } label: {
+                        Label("Coffre et serveur", systemImage: "externaldrive.connected.to.line.below")
+                    }
+                } footer: {
+                    Text("Où sont stockés vos notes, projets et carnets, et la synchronisation avec votre serveur.")
+                }
+                Section {
                     Toggle("Dessiner avec le doigt", isOn: $settings.fingerDrawing)
                     Toggle("Maintenir la pointe pour une forme parfaite", isOn: $settings.holdToSnapShapes)
                     Toggle("Toucher avec 2 doigts pour annuler, 3 pour rétablir", isOn: $settings.tapGesturesForUndo)

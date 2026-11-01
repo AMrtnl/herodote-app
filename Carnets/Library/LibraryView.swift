@@ -15,22 +15,22 @@ struct OpenNotebookRequest: Identifiable {
     let id: UUID
 }
 
-// MARK: - LibraryView
+// MARK: - NotebookLibraryView (handwritten notebooks, shown in the main window's detail column)
 
-struct LibraryView: View {
+struct NotebookLibraryView: View {
+    let section: LibrarySection
+
     @Environment(NotebookStore.self) private var store
+    @Environment(AppRouter.self) private var router
     @Bindable private var settings = CarnetsSettings.shared
 
-    @State private var section: LibrarySection? = .all
     @State private var searchText = ""
-    @State private var openRequest: OpenNotebookRequest?
 
     @State private var showNewNotebook = false
     @State private var showPDFImporter = false
     @State private var showPhotoPicker = false
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var showScanner = false
-    @State private var showSettings = false
 
     @State private var renaming: Notebook?
     @State private var renameText = ""
@@ -44,25 +44,11 @@ struct LibraryView: View {
     @State private var sharedFile: SharedFile?
 
     var body: some View {
-        NavigationSplitView {
-            sidebar
-        } detail: {
-            NavigationStack {
-                detail
-            }
-        }
-        .fullScreenCover(item: $openRequest) { request in
-            NotebookEditorView(notebookID: request.id) {
-                openRequest = nil
-            }
-        }
+        detail
         .sheet(isPresented: $showNewNotebook) {
             NewNotebookSheet(folderID: currentFolderID) { notebook in
                 openNotebook(notebook.id)
             }
-        }
-        .sheet(isPresented: $showSettings) {
-            SettingsSheet()
         }
         .sheet(item: $sharedFile) { file in
             ShareSheet(items: [file.url])
@@ -100,7 +86,7 @@ struct LibraryView: View {
             TextField("Nom du dossier", text: $folderName)
             Button("Créer") {
                 let folder = store.createFolder(named: folderName)
-                section = .folder(folder.id)
+                router.select(.library(.folder(folder.id)))
                 folderName = ""
             }
             Button("Annuler", role: .cancel) { folderName = "" }
@@ -141,68 +127,6 @@ struct LibraryView: View {
                 .glassEffect(in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             }
         }
-        .onOpenURL { url in
-            guard url.isFileURL else { return }
-            importPDFs([url], openWhenSingle: true)
-        }
-    }
-
-    // MARK: Sidebar
-
-    private var sidebar: some View {
-        List(selection: $section) {
-            Section {
-                Label("Tous les carnets", systemImage: "books.vertical")
-                    .badge(store.notebooks.count)
-                    .tag(LibrarySection.all)
-                Label("Favoris", systemImage: "star")
-                    .tag(LibrarySection.favorites)
-                Label("Récents", systemImage: "clock")
-                    .tag(LibrarySection.recents)
-            }
-            Section("Dossiers") {
-                ForEach(store.folders) { folder in
-                    Label(folder.name, systemImage: "folder")
-                        .badge(store.notebooks(in: folder.id).count)
-                        .tag(LibrarySection.folder(folder.id))
-                        .contextMenu {
-                            Button {
-                                folderName = folder.name
-                                renamingFolder = folder
-                            } label: {
-                                Label("Renommer", systemImage: "pencil")
-                            }
-                            Button(role: .destructive) {
-                                if section == .folder(folder.id) { section = .all }
-                                store.deleteFolder(folder.id)
-                            } label: {
-                                Label("Supprimer le dossier", systemImage: "trash")
-                            }
-                        }
-                        .dropDestination(for: String.self) { identifiers, _ in
-                            let ids = identifiers.compactMap(UUID.init(uuidString:))
-                            ids.forEach { store.move($0, to: folder.id) }
-                            return !ids.isEmpty
-                        }
-                }
-                Button {
-                    folderName = ""
-                    showNewFolder = true
-                } label: {
-                    Label("Nouveau dossier", systemImage: "folder.badge.plus")
-                }
-            }
-        }
-        .navigationTitle("Carnets")
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showSettings = true
-                } label: {
-                    Label("Réglages", systemImage: "gearshape")
-                }
-            }
-        }
     }
 
     // MARK: Detail
@@ -213,7 +137,7 @@ struct LibraryView: View {
     }
 
     private var sectionTitle: String {
-        switch section ?? .all {
+        switch section {
         case .all:               return "Tous les carnets"
         case .favorites:         return "Favoris"
         case .recents:           return "Récents"
@@ -223,7 +147,7 @@ struct LibraryView: View {
 
     private var visibleNotebooks: [Notebook] {
         let base: [Notebook]
-        switch section ?? .all {
+        switch section {
         case .all:            base = store.notebooks
         case .favorites:      base = store.notebooks.filter(\.isFavorite)
         case .recents:
@@ -402,11 +326,7 @@ struct LibraryView: View {
     // MARK: Actions
 
     private func openNotebook(_ id: UUID, page: Int? = nil) {
-        if let page {
-            store.update(id, touch: false) { $0.lastPageIndex = page }
-        }
-        store.markOpened(id)
-        openRequest = OpenNotebookRequest(id: id)
+        router.openNotebook(id, page: page)
     }
 
     private func quickNote() {

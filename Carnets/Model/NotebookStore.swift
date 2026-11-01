@@ -13,20 +13,50 @@ import PencilKit
     private(set) var notebooks: [Notebook] = []
     private(set) var folders: [Folder] = []
 
-    @ObservationIgnored let rootURL: URL
+    /// `<Vault>/Carnets/Données`: one folder per notebook (ink, PDFs, page renders).
+    @ObservationIgnored private(set) var rootURL: URL
     @ObservationIgnored private let ioQueue = DispatchQueue(label: "carnets.store.io", qos: .utility)
     @ObservationIgnored private var pendingSaves: [UUID: Task<Void, Never>] = [:]
 
     private init() {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        rootURL = support.appendingPathComponent("Carnets", isDirectory: true)
+        rootURL = VaultStore.shared.url(for: VaultPaths.carnetsData)
         try? FileManager.default.createDirectory(at: notebooksURL, withIntermediateDirectories: true)
+        Self.migrateLegacyStorage(into: rootURL)
         load()
+    }
+
+    /// Re-reads everything after the vault moved or was synced.
+    func reload() {
+        flushAll()
+        waitForPendingWrites()
+        rootURL = VaultStore.shared.url(for: VaultPaths.carnetsData)
+        try? FileManager.default.createDirectory(at: notebooksURL, withIntermediateDirectories: true)
+        notebooks = []
+        folders = []
+        load()
+    }
+
+    /// Notebooks created before the vault existed lived in Application Support.
+    private static func migrateLegacyStorage(into destination: URL) {
+        let fm = FileManager.default
+        let legacy = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Carnets", isDirectory: true)
+        let legacyNotebooks = legacy.appendingPathComponent("Notebooks", isDirectory: true)
+        guard let items = try? fm.contentsOfDirectory(at: legacyNotebooks, includingPropertiesForKeys: nil), !items.isEmpty else { return }
+        for item in items where !fm.fileExists(atPath: destination.appendingPathComponent(item.lastPathComponent).path) {
+            try? fm.moveItem(at: item, to: destination.appendingPathComponent(item.lastPathComponent))
+        }
+        let legacyLibrary = legacy.appendingPathComponent("library.json")
+        let newLibrary = destination.appendingPathComponent("library.json")
+        if fm.fileExists(atPath: legacyLibrary.path) && !fm.fileExists(atPath: newLibrary.path) {
+            try? fm.moveItem(at: legacyLibrary, to: newLibrary)
+        }
+        try? fm.removeItem(at: legacyNotebooks)
     }
 
     // MARK: Paths
 
-    var notebooksURL: URL { rootURL.appendingPathComponent("Notebooks", isDirectory: true) }
+    var notebooksURL: URL { rootURL }
     private var libraryURL: URL { rootURL.appendingPathComponent("library.json") }
 
     func files(for id: UUID) -> NotebookFiles {
@@ -161,6 +191,7 @@ import PencilKit
         ioQueue.async {
             try? FileManager.default.removeItem(at: directory)
         }
+        NotebookVaultBridge.shared.notebookDeleted(id)
     }
 
     // MARK: Folders
@@ -280,6 +311,8 @@ import PencilKit
             try? FileManager.default.createDirectory(at: files.directory, withIntermediateDirectories: true)
             try? data.write(to: files.metadataURL, options: .atomic)
         }
+        NotebookVaultBridge.shared.schedule(id)
+        SyncCenter.shared.localChangeOccurred()
     }
 
     private func saveLibrary() {
