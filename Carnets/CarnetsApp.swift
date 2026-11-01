@@ -37,6 +37,10 @@ struct CarnetsApp: App {
                     Button(space.title) { router.show(space) }
                         .keyboardShortcut(space.shortcut, modifiers: .command)
                 }
+                Divider()
+                // Works even when the sidebar (and its ⌘ button) is hidden.
+                Button("Ouvrir rapidement…") { router.showQuickSwitcher = true }
+                    .keyboardShortcut("o", modifiers: .command)
             }
         }
         .onChange(of: scenePhase) { _, phase in

@@ -23,7 +23,8 @@ import PencilKit
     private init() {
         rootURL = VaultStore.shared.url(for: VaultPaths.carnetsData)
         try? FileManager.default.createDirectory(at: notebooksURL, withIntermediateDirectories: true)
-        Self.migrateLegacyStorage(into: rootURL)
+        // Readers never add notebooks to the vault (they would be synced up).
+        if !isReadOnly { Self.migrateLegacyStorage(into: rootURL) }
         load()
     }
 
@@ -104,6 +105,7 @@ import PencilKit
     /// Imports a PDF as a new notebook (pages keep the PDF as background, ready to annotate).
     /// PDFs exported from GoodNotes are recognised and marked as such.
     func importPDF(from url: URL, title: String? = nil, folderID: UUID?) async throws -> Notebook {
+        guard !isReadOnly else { throw CarnetsError.readOnly }
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
 
@@ -146,6 +148,7 @@ import PencilKit
     /// GoodNotes" — the Carnets ink already printed on its pages is removed so it isn't doubled.
     @discardableResult
     func updateNotebook(_ id: UUID, fromPDF url: URL, returningFromGoodNotes: Bool = false) async throws -> Notebook? {
+        guard !isReadOnly else { throw CarnetsError.readOnly }
         guard let current = notebook(id) else { return nil }
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
@@ -168,7 +171,7 @@ import PencilKit
                                         flattened: flattened, pagesWithInk: withInk)
         if let flattened {
             // Remove the ink printed into the PDF before anything shows these pages again.
-            let updatedIDs = pairing.updatedPageIDs
+            let updatedIDs = pairing.replacedPageIDs
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 ioQueue.async {
                     flattened.stripPrintedInk(pageIDs: updatedIDs, files: files)
@@ -288,6 +291,7 @@ import PencilKit
 
     /// Creates a notebook whose pages are the given images (photos or scanned documents).
     func importImages(_ images: [UIImage], title: String, folderID: UUID?, origin: NotebookOrigin = .photos) async throws -> Notebook {
+        guard !isReadOnly else { throw CarnetsError.readOnly }
         var notebook = Notebook(title: title, cover: nil, template: .blank, paper: .white,
                                 format: .a4, landscape: false, folderID: folderID)
         let files = self.files(for: notebook.id)
@@ -323,7 +327,17 @@ import PencilKit
     }
 
     func markOpened(_ id: UUID) {
-        update(id, touch: false) { $0.openedAt = .now }
+        if isReadOnly {
+            ReadingPositions.markOpened(id)
+        } else {
+            update(id, touch: false) { $0.openedAt = .now }
+        }
+    }
+
+    /// Last time the notebook was opened, on any device (readers remember their own).
+    func openedDate(_ notebook: Notebook) -> Date? {
+        guard isReadOnly, let local = ReadingPositions.openedDate(for: notebook.id) else { return notebook.openedAt }
+        return max(local, notebook.openedAt ?? .distantPast)
     }
 
     @discardableResult
@@ -366,6 +380,7 @@ import PencilKit
     func createFolder(named name: String) -> Folder {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let folder = Folder(name: trimmed.isEmpty ? "Nouveau dossier" : trimmed)
+        guard !isReadOnly else { return folder }
         folders.append(folder)
         saveLibrary()
         return folder

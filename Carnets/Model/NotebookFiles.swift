@@ -38,12 +38,14 @@ nonisolated enum CarnetsError: LocalizedError {
     case unreadablePDF
     case lockedPDF
     case emptyImport
+    case readOnly
 
     var errorDescription: String? {
         switch self {
         case .unreadablePDF: return "Ce fichier PDF ne peut pas être lu."
         case .lockedPDF:     return "Ce PDF est protégé par un mot de passe."
         case .emptyImport:   return "Aucune page n’a pu être importée."
+        case .readOnly:      return "Les carnets se créent et se modifient sur iPad ; ici, ils sont en lecture seule."
         }
     }
 }

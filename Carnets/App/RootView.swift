@@ -70,11 +70,11 @@ struct RootView: View {
 
 struct CarnetsSpaceView: View {
     @Environment(AppRouter.self) private var router
-    /// On iPhone, open on the content rather than on the sidebar.
-    @State private var compactColumn = NavigationSplitViewColumn.detail
 
     var body: some View {
-        NavigationSplitView(preferredCompactColumn: $compactColumn) {
+        @Bindable var router = router
+        // On iPhone, open on the content rather than on the sidebar.
+        NavigationSplitView(preferredCompactColumn: $router.carnetsColumn) {
             CarnetsSidebar()
         } detail: {
             NavigationStack {
@@ -87,11 +87,10 @@ struct CarnetsSpaceView: View {
 
 struct NotesSpaceView: View {
     @Environment(AppRouter.self) private var router
-    @State private var compactColumn = NavigationSplitViewColumn.detail
 
     var body: some View {
         @Bindable var router = router
-        NavigationSplitView(preferredCompactColumn: $compactColumn) {
+        NavigationSplitView(preferredCompactColumn: $router.notesColumn) {
             NotesSidebar()
         } detail: {
             NotesStack(path: $router.notesPath) {
@@ -110,11 +109,10 @@ struct NotesSpaceView: View {
 
 struct WritingSpaceView: View {
     @Environment(AppRouter.self) private var router
-    @State private var compactColumn = NavigationSplitViewColumn.detail
 
     var body: some View {
         @Bindable var router = router
-        NavigationSplitView(preferredCompactColumn: $compactColumn) {
+        NavigationSplitView(preferredCompactColumn: $router.writingColumn) {
             WritingSidebar()
         } detail: {
             NotesStack(path: $router.writingPath) {
@@ -183,7 +181,6 @@ struct SidebarChrome: ViewModifier {
                     } label: {
                         Label("Ouvrir rapidement", systemImage: "command")
                     }
-                    .keyboardShortcut("o", modifiers: .command)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {

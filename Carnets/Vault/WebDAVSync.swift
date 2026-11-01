@@ -314,7 +314,10 @@ actor VaultSyncEngine {
         let size: Int
     }
 
-    func run(root: URL, client: WebDAVClient, state initial: SyncState) async throws -> (SyncState, SyncReport) {
+    /// `readOnlyPrefix`: on devices that only read notebooks (iPhone, Mac), files under this prefix
+    /// always follow the server — they are downloaded, never uploaded or deleted remotely.
+    func run(root: URL, client: WebDAVClient, state initial: SyncState,
+             readOnlyPrefix: String? = nil) async throws -> (SyncState, SyncReport) {
         var state = initial
         if state.serverURL != client.base.absoluteString {
             state = SyncState(serverURL: client.base.absoluteString, records: [:])
@@ -333,6 +336,12 @@ actor VaultSyncEngine {
             let fileURL = root.appendingPathComponent(path)
             if path.hasPrefix(VaultPaths.carnetsData + "/") && (l != nil || r != nil) && (localChanged || remoteChanged) {
                 report.touchedNotebooks = true
+            }
+            if let prefix = readOnlyPrefix, path.hasPrefix(prefix) {
+                try await followServer(path, local: l, remote: r, record: record, localChanged: localChanged,
+                                       remoteChanged: remoteChanged, client: client, root: root,
+                                       state: &state, report: &report)
+                continue
             }
 
             switch (l, r) {
@@ -384,6 +393,33 @@ actor VaultSyncEngine {
             }
         }
         return (state, report)
+    }
+
+    /// The server's version wins: the iPad is the only device that writes notebooks.
+    private func followServer(_ path: String, local: LocalFile?, remote: RemoteEntry?, record: SyncRecord?,
+                              localChanged: Bool, remoteChanged: Bool, client: WebDAVClient, root: URL,
+                              state: inout SyncState, report: inout SyncReport) async throws {
+        let fileURL = root.appendingPathComponent(path)
+        switch (local, remote) {
+        case let (_?, remoteFile?):
+            if record == nil || localChanged || remoteChanged {
+                state.records[path] = try await pull(path, etag: remoteFile.etag, client: client, root: root)
+                report.downloaded += 1
+            }
+        case (_?, nil):
+            if record != nil && !localChanged {
+                // Deleted on the iPad.
+                try? FileManager.default.removeItem(at: fileURL)
+                report.deletedLocal += 1
+            }
+            // Files only this device has (e.g. from an older version) stay here and are never uploaded.
+            state.records[path] = nil
+        case let (nil, remoteFile?):
+            state.records[path] = try await pull(path, etag: remoteFile.etag, client: client, root: root)
+            report.downloaded += 1
+        case (nil, nil):
+            state.records[path] = nil
+        }
     }
 
     private func push(_ path: String, client: WebDAVClient, root: URL) async throws -> SyncRecord {
@@ -527,7 +563,9 @@ actor VaultSyncEngine {
         let client = WebDAVClient(base: base, username: account.username, password: password)
         let root = VaultStore.shared.rootURL
         do {
-            let (newState, report) = try await engine.run(root: root, client: client, state: state)
+            let readOnlyPrefix = NotebookStore.shared.isReadOnly ? VaultPaths.carnetsData + "/" : nil
+            let (newState, report) = try await engine.run(root: root, client: client, state: state,
+                                                          readOnlyPrefix: readOnlyPrefix)
             state = newState
             saveState()
             lastSync = .now

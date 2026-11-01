@@ -79,6 +79,12 @@ enum NotesRoute: Hashable {
     private(set) var writingSection: WritingSection? = .projects
     var writingPath: [NotesRoute] = []
 
+    /// Column shown when a space is collapsed (iPhone, narrow windows): opening something
+    /// brings its content on screen even if the sidebar was showing.
+    var carnetsColumn = NavigationSplitViewColumn.detail
+    var notesColumn = NavigationSplitViewColumn.detail
+    var writingColumn = NavigationSplitViewColumn.detail
+
     /// Set through `openNotebook(_:)` / `closeNotebook()` so sync knows when a notebook is open.
     var openNotebookRequest: OpenNotebookRequest?
     var showQuickSwitcher = false
@@ -101,11 +107,13 @@ enum NotesRoute: Hashable {
     func selectLibrary(_ section: LibrarySection?) {
         show(.carnets)
         librarySection = section
+        if section != nil { carnetsColumn = .detail }
     }
 
     /// Sidebar selection: switching section starts a fresh navigation stack.
     func selectNotes(_ section: NotesSection?) {
         show(.notes)
+        if section != nil { notesColumn = .detail }
         guard section != notesSection else { return }
         notesSection = section
         notesPath = []
@@ -113,6 +121,7 @@ enum NotesRoute: Hashable {
 
     func selectWriting(_ section: WritingSection?) {
         show(.writing)
+        if section != nil { writingColumn = .detail }
         guard section != writingSection else { return }
         writingSection = section
         writingPath = []
@@ -136,20 +145,26 @@ enum NotesRoute: Hashable {
         }
         let route: NotesRoute = notebookID != nil ? .companion(notePath) : .note(notePath)
         if notePath.hasPrefix(VaultPaths.writing + "/") {
-            if space == .writing {
+            // A sheet opens inside its project, so Back leads to the project.
+            let folder = (notePath as NSString).deletingLastPathComponent
+            let section: WritingSection = vault.project(at: folder) != nil ? .project(folder) : .projects
+            if space == .writing && writingSection == section {
                 writingPath.append(route)
             } else {
                 show(.writing)
+                writingSection = section
                 writingPath = [route]
             }
+            writingColumn = .detail
             return
         }
-        if space == .notes {
+        if space == .notes && notesColumn == .detail {
             notesPath.append(route)
         } else {
             show(.notes)
             notesPath = [route]
         }
+        notesColumn = .detail
     }
 
     /// Pushes a route in the current space (Notes when coming from Carnets).
@@ -161,11 +176,14 @@ enum NotesRoute: Hashable {
         switch space {
         case .writing:
             writingPath.append(route)
+            writingColumn = .detail
         case .notes:
             notesPath.append(route)
+            notesColumn = .detail
         case .carnets:
             show(.notes)
             notesPath = [route]
+            notesColumn = .detail
         }
     }
 
@@ -174,6 +192,7 @@ enum NotesRoute: Hashable {
         show(.notes)
         notesSection = .folder(VaultPaths.journal)
         notesPath = [.note(today)]
+        notesColumn = .detail
     }
 
     // MARK: Notebooks
@@ -228,5 +247,13 @@ enum ReadingPositions {
 
     static func set(_ page: Int, for id: UUID) {
         UserDefaults.standard.set(page, forKey: key(id))
+    }
+
+    static func markOpened(_ id: UUID) {
+        UserDefaults.standard.set(Date.now, forKey: "carnets.opened.\(id.uuidString)")
+    }
+
+    static func openedDate(for id: UUID) -> Date? {
+        UserDefaults.standard.object(forKey: "carnets.opened.\(id.uuidString)") as? Date
     }
 }

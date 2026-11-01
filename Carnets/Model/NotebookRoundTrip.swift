@@ -71,8 +71,9 @@ nonisolated struct FlattenedExport: Codable, Sendable {
 nonisolated enum PagePairing {
     nonisolated struct Result: Sendable {
         var pages: [NotebookPage]
-        /// Pages (already in the notebook) that now show a page of the new export.
-        var updatedPageIDs: [UUID]
+        /// Pages (already in the notebook) that now show a page of the new export: only these
+        /// can have their printed Carnets ink removed.
+        var replacedPageIDs: [UUID]
     }
 
     /// Builds the page list after a newer export replaces an imported PDF.
@@ -103,7 +104,7 @@ nonisolated enum PagePairing {
 
         var pages: [NotebookPage] = []
         var origins: [Int?] = []
-        var updated: [UUID] = []
+        var replaced: [UUID] = []
         for page in old {
             if let index = freshIndexFor[page.id] {
                 var replacement = fresh[index]
@@ -118,7 +119,7 @@ nonisolated enum PagePairing {
                 replacement.revision = page.revision + 1
                 pages.append(replacement)
                 origins.append(index)
-                updated.append(page.id)
+                replaced.append(page.id)
                 continue
             }
             var showsPreviousPDF = false
@@ -147,7 +148,6 @@ nonisolated enum PagePairing {
             kept.revision += 1
             pages.append(kept)
             origins.append(nil)
-            updated.append(page.id)
         }
 
         // Pages that are new in the export.
@@ -163,6 +163,6 @@ nonisolated enum PagePairing {
             pages.insert(fresh[index], at: position)
             origins.insert(index, at: position)
         }
-        return Result(pages: pages, updatedPageIDs: updated)
+        return Result(pages: pages, replacedPageIDs: replaced)
     }
 }

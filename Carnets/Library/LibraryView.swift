@@ -44,7 +44,6 @@ struct NotebookLibraryView: View {
     @State private var renameText = ""
     @State private var showNewFolder = false
     @State private var folderName = ""
-    @State private var renamingFolder: Folder?
     @State private var pendingDelete: Notebook?
 
     @State private var busyMessage: String?
@@ -139,16 +138,6 @@ struct NotebookLibraryView: View {
             }
             Button("Annuler", role: .cancel) { folderName = "" }
         }
-        .alert("Renommer le dossier", isPresented: Binding(get: { renamingFolder != nil },
-                                                           set: { if !$0 { renamingFolder = nil } })) {
-            TextField("Nom du dossier", text: $folderName)
-            Button("Renommer") {
-                if let folder = renamingFolder { store.renameFolder(folder.id, to: folderName) }
-                renamingFolder = nil
-                folderName = ""
-            }
-            Button("Annuler", role: .cancel) { renamingFolder = nil; folderName = "" }
-        }
         .confirmationDialog("Supprimer « \(pendingDelete?.title ?? "") » ?",
                             isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
                             titleVisibility: .visible) {
@@ -204,14 +193,14 @@ struct NotebookLibraryView: View {
         case .documents:      base = store.notebooks.filter { LibrarySection.documentOrigins.contains($0.origin) }
         case .recents:
             return Array(store.notebooks
-                .filter { $0.openedAt != nil }
-                .sorted { ($0.openedAt ?? .distantPast) > ($1.openedAt ?? .distantPast) }
+                .filter { store.openedDate($0) != nil }
+                .sorted { (store.openedDate($0) ?? .distantPast) > (store.openedDate($1) ?? .distantPast) }
                 .prefix(24))
         case .folder(let id): base = store.notebooks(in: id)
         }
         switch settings.librarySort {
         case .modified: return base.sorted { $0.modifiedAt > $1.modifiedAt }
-        case .opened:   return base.sorted { ($0.openedAt ?? $0.modifiedAt) > ($1.openedAt ?? $1.modifiedAt) }
+        case .opened:   return base.sorted { (store.openedDate($0) ?? $0.modifiedAt) > (store.openedDate($1) ?? $1.modifiedAt) }
         case .created:  return base.sorted { $0.createdAt > $1.createdAt }
         case .title:    return base.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         }
@@ -355,8 +344,10 @@ struct NotebookLibraryView: View {
             } description: {
                 Text("Exportez vos carnets GoodNotes en PDF (un dossier devient une archive ZIP) et importez-les : ils gardent leurs dossiers, et leur écriture devient cherchable.")
             } actions: {
-                Button("Importer depuis GoodNotes") { router.showGoodNotesImport = true }
-                    .buttonStyle(.glassProminent)
+                if !store.isReadOnly {
+                    Button("Importer depuis GoodNotes") { router.showGoodNotesImport = true }
+                        .buttonStyle(.glassProminent)
+                }
             }
         } else {
             defaultEmptyState

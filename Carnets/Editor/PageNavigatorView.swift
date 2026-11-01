@@ -165,7 +165,7 @@ struct PageNavigatorView: View {
                     Text(item.page.title.isEmpty ? "Page \(item.index + 1)" : item.page.title)
                         .font(.body.weight(.medium))
                         .foregroundStyle(.primary)
-                    Text("Page \(item.index + 1)")
+                    Text(item.page.title.isEmpty ? "Marque-page" : "Page \(item.index + 1)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

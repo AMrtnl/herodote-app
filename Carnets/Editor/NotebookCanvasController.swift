@@ -38,7 +38,12 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
     private var horizontal = false
     private var isReadOnly: Bool { model.isReadOnly }
     private var laserUndoSuspended = false
+    private var undoReenableDepth = 0
+    /// Strokes on the canvas when the laser was last armed; anything else drawn is laser.
+    private var laserBaseline = Set<UUID>()
     private var dragStartPage = 0
+    private var lastTargetPage: Int?
+    private var laidOutHeight: CGFloat = 0
 
     // Views
     private let underlay = UIView()
@@ -182,7 +187,8 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         guard isLoaded, canvasView.bounds.width > 0 else { return }
-        if abs(canvasView.bounds.width - laidOutWidth) > 0.5 {
+        let heightChanged = horizontal && abs(canvasView.bounds.height - laidOutHeight) > 0.5
+        if abs(canvasView.bounds.width - laidOutWidth) > 0.5 || heightChanged {
             configureZoom(preserveRelative: fitScale > 0)
             if let page = pendingScrollPage {
                 pendingScrollPage = nil
@@ -201,7 +207,7 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
         let index = model.currentPageIndex
         if isReadOnly {
             // Readers keep their place on the device; the notebook itself is never written.
-            ReadingPositions.set(index, for: model.notebookID)
+            if isLoaded { ReadingPositions.set(index, for: model.notebookID) }
             return
         }
         commitInk()
@@ -211,6 +217,10 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
     }
 
     @objc private func appWillResign(_ note: Notification) {
+        if isReadOnly {
+            if isLoaded { ReadingPositions.set(model.currentPageIndex, for: model.notebookID) }
+            return
+        }
         commitInk()
         model.store.flushAll()
     }
@@ -287,6 +297,7 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
         canvasView.drawing = composeDrawing()
         isSettingDrawing = false
         strokeCount = canvasView.drawing.strokes.count
+        resetLaserBaseline()
         history.removeAllActions()
         recognizer = nil
         for view in pageViews.values { view.removeFromSuperview() }
@@ -318,6 +329,7 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
             fitScale = width / contentWidth
         }
         laidOutWidth = width
+        laidOutHeight = canvasView.bounds.height
         canvasView.minimumZoomScale = fitScale * 0.5
         canvasView.maximumZoomScale = fitScale * 6
         canvasView.zoomScale = min(max(fitScale * relative, canvasView.minimumZoomScale), canvasView.maximumZoomScale)
@@ -338,9 +350,16 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
         let size = CGSize(width: contentWidth * z, height: contentHeight * z)
         if canvasView.contentSize != size { canvasView.contentSize = size }
         underlay.frame = CGRect(origin: .zero, size: size)
-        let side = max(0, (canvasView.bounds.width - size.width) / 2)
+        var left = max(0, (canvasView.bounds.width - size.width) / 2)
+        var right = left
         var top = insets.top
         var bottom = insets.bottom
+        if horizontal, let first = pageRects.first, let last = pageRects.last {
+            // Room on both ends so that the first and last pages can be centred like the others.
+            let half = canvasView.bounds.width / 2
+            left = max(0, half - first.midX * z)
+            right = max(0, half - (contentWidth - last.midX) * z)
+        }
         if horizontal {
             // Centre the row of pages vertically when it is shorter than the screen.
             let free = canvasView.bounds.height - insets.top - insets.bottom - size.height
@@ -349,7 +368,7 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
                 bottom += free / 2
             }
         }
-        let newInsets = UIEdgeInsets(top: top, left: side, bottom: bottom, right: side)
+        let newInsets = UIEdgeInsets(top: top, left: left, bottom: bottom, right: right)
         if canvasView.contentInset != newInsets { canvasView.contentInset = newInsets }
     }
 
@@ -483,7 +502,12 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
         // Laser strokes are never part of the notebook: keep them out of undo.
         if laser != laserUndoSuspended {
             laserUndoSuspended = laser
-            if laser { history.disableUndoRegistration() } else { history.enableUndoRegistration() }
+            if laser {
+                resetLaserBaseline()
+                history.disableUndoRegistration()
+            } else {
+                history.enableUndoRegistration()
+            }
         }
         // Deferred: this runs inside a SwiftUI update pass.
         let tool = configuration.tool
@@ -730,8 +754,13 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
     }
 
     func zoomToFitWidth() {
-        canvasView.setZoomScale(fitScale, animated: true)
-        if horizontal { scrollToPage(model.currentPageIndex, animated: true) }
+        if horizontal {
+            let page = model.currentPageIndex
+            canvasView.setZoomScale(fitScale, animated: false)
+            scrollToPage(page, animated: true)
+        } else {
+            canvasView.setZoomScale(fitScale, animated: true)
+        }
     }
 
     /// Content offset that centres page `index` horizontally.
@@ -753,10 +782,17 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
         canvasView.decelerationRate = horizontal ? .fast : .normal
         fitScale = 0
         rebuild(scrollTo: page)
+        // Highlights were in the previous layout's coordinates.
+        if model.isSearching { model.runSearch() } else { showSearchHits([], current: 0) }
     }
 
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
-        dragStartPage = model.currentPageIndex
+        // A second flick while the first one is still landing continues from where it lands.
+        if scrollView.isDecelerating, let target = lastTargetPage {
+            dragStartPage = target
+        } else {
+            dragStartPage = model.currentPageIndex
+        }
     }
 
     /// Page turning: at "fit" zoom, a swipe lands exactly on the previous or next page.
@@ -775,6 +811,7 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
             target = pageIndex(at: CGPoint(x: centre, y: pageRects[min(current, pageRects.count - 1)].midY))
         }
         target = min(max(target, 0), pageRects.count - 1)
+        lastTargetPage = target
         let inset = canvasView.contentInset
         let maxX = max(-inset.left, canvasView.contentSize.width + inset.right - canvasView.bounds.width)
         targetContentOffset.pointee.x = min(max(centeredOffsetX(for: target), -inset.left), maxX)
@@ -784,18 +821,33 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
 
     func undo() {
         guard history.canUndo else { return }
-        history.undo()
+        registeringUndo { history.undo() }
         afterHistoryChange()
     }
 
     func redo() {
         guard history.canRedo else { return }
-        history.redo()
+        registeringUndo { history.redo() }
         afterHistoryChange()
+    }
+
+    /// Undo registration is off while the laser is armed (laser strokes are never undoable);
+    /// real edits made meanwhile — undo itself, a photo, a page change — still register.
+    private func registeringUndo(_ body: () -> Void) {
+        guard laserUndoSuspended, undoReenableDepth == 0 else {
+            body()
+            return
+        }
+        undoReenableDepth += 1
+        history.enableUndoRegistration()
+        body()
+        history.disableUndoRegistration()
+        undoReenableDepth -= 1
     }
 
     private func afterHistoryChange() {
         strokeCount = canvasView.drawing.strokes.count
+        resetLaserBaseline()
         reloadPages()
         layoutPageContent()
         refreshSelection()
@@ -804,6 +856,9 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
     }
 
     @objc private func undoStateChanged(_ note: Notification) {
+        if note.name == .NSUndoManagerDidUndoChange || note.name == .NSUndoManagerDidRedoChange {
+            resetLaserBaseline()
+        }
         updateUndoState()
     }
 
@@ -830,12 +885,15 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
         canvasView.drawing = drawing
         isSettingDrawing = false
         strokeCount = drawing.strokes.count
-        history.registerUndo(withTarget: self) { target in
-            MainActor.assumeIsolated {
-                target.setDrawing(previous, previous: drawing, actionName: actionName)
+        resetLaserBaseline()
+        registeringUndo {
+            history.registerUndo(withTarget: self) { target in
+                MainActor.assumeIsolated {
+                    target.setDrawing(previous, previous: drawing, actionName: actionName)
+                }
             }
+            history.setActionName(actionName)
         }
-        history.setActionName(actionName)
         scheduleInkSave()
         updateUndoState()
     }
@@ -845,15 +903,24 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
     static let laserColor = UIColor(red: 1, green: 0.23, blue: 0.19, alpha: 1)
 
     /// Takes the strokes just drawn with the laser off the page and lets them glow and fade.
+    private func resetLaserBaseline() {
+        laserBaseline = Set(canvasView.drawing.strokes.map { $0.id })
+    }
+
     private func fadeLaserStrokes() {
         let drawing = canvasView.drawing
-        guard drawing.strokes.count > strokeCount else { return }
-        let laser = Array(drawing.strokes[strokeCount...])
+        let laser = drawing.strokes.filter { !laserBaseline.contains($0.id) }
+        guard !laser.isEmpty else {
+            // The drawing only shrank (e.g. a system undo): nothing to fade.
+            strokeCount = drawing.strokes.count
+            return
+        }
         var restored = drawing
-        restored.strokes = Array(drawing.strokes.prefix(strokeCount))
+        restored.strokes = drawing.strokes.filter { laserBaseline.contains($0.id) }
         isSettingDrawing = true
         canvasView.drawing = restored
         isSettingDrawing = false
+        strokeCount = restored.strokes.count
 
         var bounds = CGRect.null
         for stroke in laser { bounds = bounds.union(stroke.renderBounds) }
@@ -1002,12 +1069,14 @@ final class NotebookCanvasController: UIViewController, PKCanvasViewDelegate,
             pages[index].elements = elements
             pages[index].revision += 1
         }
-        history.registerUndo(withTarget: self) { target in
-            MainActor.assumeIsolated {
-                target.setElements(previous, previous: elements, pageID: pageID, actionName: actionName)
+        registeringUndo {
+            history.registerUndo(withTarget: self) { target in
+                MainActor.assumeIsolated {
+                    target.setElements(previous, previous: elements, pageID: pageID, actionName: actionName)
+                }
             }
+            history.setActionName(actionName)
         }
-        history.setActionName(actionName)
         if let selected = model.selectedElementID, locateElement(selected) == nil {
             model.selectedElementID = nil
         }

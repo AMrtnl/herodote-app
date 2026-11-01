@@ -143,9 +143,6 @@ struct NotebookEditorView: View {
         } message: {
             Text("Les pages nommées forment le plan du carnet, et leurs titres apparaissent dans sa note du coffre.")
         }
-        .onChange(of: model.pageTitleEdit?.id) {
-            pageTitleText = model.pageTitleEdit?.title ?? ""
-        }
         .alert("Renommer le carnet", isPresented: $showRename) {
             TextField("Titre", text: $renameText)
             Button("Renommer") { model.store.rename(notebookID, to: renameText) }
@@ -352,6 +349,7 @@ struct NotebookEditorView: View {
             }
             Section("Page \(model.currentPageIndex + 1)") {
                 Button {
+                    pageTitleText = model.currentPage?.title ?? ""
                     model.pageTitleEdit = PageTitleRequest(pageIndex: model.currentPageIndex,
                                                            title: model.currentPage?.title ?? "")
                 } label: {
@@ -506,8 +504,19 @@ struct NotebookEditorView: View {
     /// Closes the notebook and opens its Markdown note (page images + recognised text),
     /// where typed notes and [[links]] can be added around the generated part.
     private func openLinkedNote() {
-        model.canvas?.finish()
         let id = notebookID
+        if model.isReadOnly {
+            // The iPad writes the note; here it is either already synced or not there yet.
+            guard let path = NotebookVaultBridge.shared.companionPath(for: id) else {
+                model.flash("La note de ce carnet n’est pas encore synchronisée")
+                return
+            }
+            model.canvas?.finish()
+            onClose()
+            AppRouter.shared.openNote(path, followNotebook: false)
+            return
+        }
+        model.canvas?.finish()
         onClose()
         Task {
             NotebookVaultBridge.shared.schedule(id)
