@@ -94,7 +94,7 @@ nonisolated enum ZipArchive {
     /// Extracts every file to `directory` and returns their relative paths.
     /// Ignores macOS metadata and refuses paths escaping the destination.
     @discardableResult
-    static func extractAll(from url: URL, to directory: URL) throws -> [String] {
+    static func extractAll(from url: URL, to directory: URL, extensions: Set<String>? = nil) throws -> [String] {
         let data = try Data(contentsOf: url, options: .mappedIfSafe)
         let fm = FileManager.default
         var written: [String] = []
@@ -102,11 +102,17 @@ nonisolated enum ZipArchive {
             let parts = entry.path.split(separator: "/").map(String.init)
                 .filter { !$0.isEmpty && $0 != "." && $0 != ".." }
             guard let last = parts.last, !parts.contains("__MACOSX"), !last.hasPrefix("._"), last != ".DS_Store" else { continue }
+            if let wanted = extensions, !wanted.contains((last as NSString).pathExtension.lowercased()) { continue }
             let relative = parts.joined(separator: "/")
             let target = directory.appendingPathComponent(relative)
-            try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try extract(entry, from: data).write(to: target, options: .atomic)
-            written.append(relative)
+            // One damaged entry shouldn't make the rest of the archive unreadable.
+            do {
+                try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try extract(entry, from: data).write(to: target, options: .atomic)
+                written.append(relative)
+            } catch {
+                continue
+            }
         }
         return written
     }
@@ -115,7 +121,7 @@ nonisolated enum ZipArchive {
 // MARK: - GoodNotes exports
 
 nonisolated struct ImportCandidate: Sendable {
-    nonisolated enum Kind: Sendable { case pdf, goodNotesPackage }
+    nonisolated enum Kind: Sendable { case pdf, goodNotesPackage, notDownloaded }
 
     /// A readable local file (original, or extracted from an archive).
     let url: URL
@@ -142,7 +148,7 @@ nonisolated enum GoodNotesImporter {
         case "zip":
             let destination = workDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
             try fm.createDirectory(at: destination, withIntermediateDirectories: true)
-            try ZipArchive.extractAll(from: url, to: destination)
+            try ZipArchive.extractAll(from: url, to: destination, extensions: ["pdf", "goodnotes"])
             // An archive of a GoodNotes folder usually contains that folder at its root.
             let roots = ((try? fm.contentsOfDirectory(at: destination, includingPropertiesForKeys: [.isDirectoryKey])) ?? [])
             let folders = roots.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true }
@@ -157,12 +163,26 @@ nonisolated enum GoodNotesImporter {
 
     private static func walk(_ directory: URL, folderPath: [String]) -> [ImportCandidate] {
         let fm = FileManager.default
-        let items = ((try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isDirectoryKey],
-                                                  options: [.skipsHiddenFiles])) ?? [])
+        let items = ((try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isDirectoryKey])) ?? [])
             .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
         var result: [ImportCandidate] = []
         for item in items {
-            if (try? item.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+            let name = item.lastPathComponent
+            if name.hasPrefix(".") {
+                // iCloud keeps files that aren't downloaded yet as ".Nom.pdf.icloud".
+                if name.hasSuffix(".icloud") {
+                    let original = String(name.dropFirst().dropLast(".icloud".count))
+                    let ext = (original as NSString).pathExtension.lowercased()
+                    if ext == "pdf" || ext == "goodnotes" {
+                        try? fm.startDownloadingUbiquitousItem(at: item)
+                        result.append(ImportCandidate(url: item, title: (original as NSString).deletingPathExtension,
+                                                      folderPath: folderPath, kind: .notDownloaded))
+                    }
+                }
+                continue
+            }
+            if (try? item.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true,
+               item.pathExtension.lowercased() != "goodnotes" {
                 result += walk(item, folderPath: folderPath + [item.lastPathComponent])
                 continue
             }

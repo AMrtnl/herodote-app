@@ -137,39 +137,45 @@ import PencilKit
     }
 
     /// Replaces the pages of an imported notebook with a newer export of the same document.
-    /// Ink, text boxes, photos and bookmarks added in Carnets stay on the same page numbers.
+    /// Pages are matched by their page number in the PDF, so ink, text boxes, photos, titles and
+    /// bookmarks added in Carnets stay on the right page, and pages added in Carnets stay put.
+    /// `returningFromGoodNotes`: the PDF is GoodNotes' export of an earlier "Envoyer vers
+    /// GoodNotes" — the Carnets ink already printed on its pages is removed so it isn't doubled.
     @discardableResult
-    func updateNotebook(_ id: UUID, fromPDF url: URL) async throws -> Notebook? {
-        guard notebook(id) != nil else { return nil }
+    func updateNotebook(_ id: UUID, fromPDF url: URL, returningFromGoodNotes: Bool = false) async throws -> Notebook? {
+        guard let current = notebook(id) else { return nil }
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
         flush(id)
+        await pendingWritesFlushed()
         let files = self.files(for: id)
-        let result = try await Task.detached(priority: .userInitiated) { () -> ([NotebookPage], Bool) in
+        let result = try await Task.detached(priority: .userInitiated) { () -> ([NotebookPage], Bool, FlattenedExport?) in
             let pages = try Importer.importPDF(from: url, into: files)
-            return (pages, GoodNotesImporter.isGoodNotesPDF(url))
+            let flattened = returningFromGoodNotes ? FlattenedExport.load(from: files) : nil
+            return (pages, GoodNotesImporter.isGoodNotesPDF(url), flattened)
         }.value
         let fresh = result.0
-        update(id) { notebook in
-            var merged: [NotebookPage] = []
-            for (index, page) in fresh.enumerated() {
-                var updated = page
-                if notebook.pages.indices.contains(index) {
-                    let previous = notebook.pages[index]
-                    updated.id = previous.id
-                    updated.elements = previous.elements
-                    updated.isBookmarked = previous.isBookmarked
-                    updated.recognizedText = previous.recognizedText
-                    updated.searchableText = previous.searchableText
-                    updated.recognitionVersion = previous.recognitionVersion
-                    updated.revision = previous.revision + 1
+        let flattened = result.2
+        let fm = FileManager.default
+        let withInk = Set(current.pages.map { $0.id }.filter { pageID in
+            ((try? fm.attributesOfItem(atPath: files.drawingURL(pageID).path))?[.size] as? Int ?? 0) > 0
+        })
+        let previousFile = current.source?.originalFile
+        let pairing = PagePairing.merge(old: current.pages, fresh: fresh, previousFile: previousFile,
+                                        flattened: flattened, pagesWithInk: withInk)
+        if let flattened {
+            // Remove the ink printed into the PDF before anything shows these pages again.
+            let updatedIDs = pairing.updatedPageIDs
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                ioQueue.async {
+                    flattened.stripPrintedInk(pageIDs: updatedIDs, files: files)
+                    FlattenedExport.remove(from: files)
+                    continuation.resume()
                 }
-                merged.append(updated)
             }
-            if notebook.pages.count > fresh.count {
-                merged += notebook.pages[fresh.count...]
-            }
-            notebook.pages = merged
+        }
+        update(id) { notebook in
+            notebook.pages = pairing.pages
             var source = notebook.source ?? NotebookSource(origin: result.1 ? .goodNotes : .pdf)
             if result.1 { source.origin = .goodNotes }
             source.originalName = url.lastPathComponent
@@ -177,25 +183,55 @@ import PencilKit
             source.updatedAt = .now
             notebook.source = source
         }
+        // Write the new page list before the previous PDF is deleted.
+        flush(id)
         collectGarbage(id)
         return notebook(id)
     }
 
+    /// Whether "Envoyer vers GoodNotes" was used on this notebook since its last update.
+    func sentToGoodNotesDate(_ id: UUID) -> Date? {
+        FlattenedExport.load(from: files(for: id))?.exportedAt
+    }
+
     /// An already imported notebook that a new export of `fileName` should update.
-    func importedNotebook(matching fileName: String) -> Notebook? {
+    /// - `folderPath`: when folders are recreated, a notebook in that folder wins over
+    ///   same-named notebooks elsewhere (« Cours › S1 › Notes » vs « Cours › S2 › Notes »).
+    /// - `excluding`: notebooks already created or updated during this import.
+    func importedNotebook(matching fileName: String, origin: NotebookOrigin, folderPath: [String]?,
+                          excluding: Set<UUID>) -> Notebook? {
         let stem = (fileName as NSString).deletingPathExtension.lowercased()
-        return notebooks.first { notebook in
-            guard let source = notebook.source, source.origin == .goodNotes || source.origin == .pdf else { return false }
+        let matches = notebooks.filter { notebook in
+            guard !excluding.contains(notebook.id), let source = notebook.source, source.origin == origin else { return false }
             let original = ((source.originalName ?? "") as NSString).deletingPathExtension.lowercased()
             return original == stem || notebook.title.lowercased() == stem
         }
+        guard let folderPath else { return matches.count == 1 ? matches.first : nil }
+        let target = existingFolderID(forPath: folderPath)
+        if target != nil || Self.folderName(folderPath).isEmpty,
+           let inFolder = matches.first(where: { $0.folderID == target }) {
+            return inFolder
+        }
+        // Moved elsewhere in Carnets since the last import: only when there is no ambiguity.
+        return matches.count == 1 ? matches.first : nil
+    }
+
+    private static func folderName(_ components: [String]) -> String {
+        components.filter { !$0.isEmpty }.joined(separator: " › ")
+    }
+
+    /// The folder for an exported folder path, without creating it.
+    func existingFolderID(forPath components: [String]) -> UUID? {
+        let name = Self.folderName(components)
+        guard !name.isEmpty else { return nil }
+        return folders.first { $0.name == name }?.id
     }
 
     /// Finds or creates the folder for an exported folder path (nested folders are shown as "A › B").
     func folderID(forPath components: [String]) -> UUID? {
-        let name = components.filter { !$0.isEmpty }.joined(separator: " › ")
+        let name = Self.folderName(components)
         guard !name.isEmpty else { return nil }
-        if let existing = folders.first(where: { $0.name == name }) { return existing.id }
+        if let existing = existingFolderID(forPath: components) { return existing }
         return createFolder(named: name).id
     }
 
@@ -237,6 +273,10 @@ import PencilKit
             }
         }
         merged.pages = pages
+        // Keep imported handwriting visible in the vault and in the « Importés » section.
+        if let imported = sources.first(where: { $0.origin == .goodNotes }) ?? sources.first(where: { $0.source != nil }) {
+            merged.source = NotebookSource(origin: imported.origin)
+        }
         insert(merged)
         HandwritingIndexer.shared.schedule(notebookID: merged.id, pageIDs: pages.map(\.id))
         return merged
@@ -262,7 +302,7 @@ import PencilKit
 
     func rename(_ id: UUID, to title: String) {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty, notebook(id)?.title != trimmed else { return }
         update(id) { $0.title = trimmed }
     }
 

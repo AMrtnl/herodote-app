@@ -84,9 +84,11 @@ nonisolated enum PageTextRecognizer {
                 guard let index = notebook.pages.firstIndex(where: { $0.id == item.page }) else { return }
                 let existing = notebook.pages[index].sourceText
                 // Keep text the PDF already had (typed text) and add what was read from the image.
-                notebook.pages[index].sourceText = existing.isEmpty || existing.contains(recognized)
-                    ? recognized
-                    : existing + "\n" + recognized
+                if existing.isEmpty {
+                    notebook.pages[index].sourceText = recognized
+                } else if !existing.contains(recognized) {
+                    notebook.pages[index].sourceText = existing + "\n" + recognized
+                }
             }
         }
         remaining = 0

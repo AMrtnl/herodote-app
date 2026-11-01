@@ -511,9 +511,7 @@ struct NotebookLibraryView: View {
             let urls = await Task.detached(priority: .userInitiated) { () -> [URL] in
                 var result: [URL] = []
                 for (notebook, files) in jobs {
-                    let url = FileManager.default.temporaryDirectory
-                        .appendingPathComponent(PageRenderer.exportFileName(notebook.title, ext: "pdf"))
-                    try? FileManager.default.removeItem(at: url)
+                    let url = PageRenderer.temporaryExportURL(notebook.title, ext: "pdf")
                     if (try? PageRenderer.exportPDF(notebook: notebook, files: files, drawings: nil, to: url)) != nil {
                         result.append(url)
                     }
@@ -605,8 +603,7 @@ struct NotebookLibraryView: View {
         store.waitForPendingWrites()
         guard let latest = store.notebook(notebook.id) else { return }
         let files = store.files(for: notebook.id)
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent(PageRenderer.exportFileName(latest.title, ext: "pdf"))
+        let url = PageRenderer.temporaryExportURL(latest.title, ext: "pdf")
         busyMessage = "Exportation du PDF…"
         Task {
             do {

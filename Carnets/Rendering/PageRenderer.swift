@@ -354,6 +354,15 @@ nonisolated enum PageRenderer {
         let base = cleaned.isEmpty ? "Carnet" : cleaned
         return base + suffix + "." + ext
     }
+
+    /// A fresh temporary location for an exported file, so exports with the same name never collide.
+    static func temporaryExportURL(_ title: String, suffix: String = "", ext: String) -> URL {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Exports", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder.appendingPathComponent(exportFileName(title, suffix: suffix, ext: ext))
+    }
 }
 
 // MARK: - Caches (thread-safe)

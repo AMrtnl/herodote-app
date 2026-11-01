@@ -14,6 +14,7 @@ struct NotebookInfoSheet: View {
     @State private var busy: String?
     @State private var message: String?
     @State private var sharedFile: SharedFile?
+    @State private var pendingUpdate: URL?
     private let recognizer = ImportedTextRecognizer.shared
 
     private var notebook: Notebook? { store.notebook(notebookID) }
@@ -62,7 +63,7 @@ struct NotebookInfoSheet: View {
                             }
                             if let file = notebook.source?.originalFile {
                                 Button {
-                                    sharedFile = SharedFile(url: store.files(for: notebookID).assetURL(file))
+                                    shareOriginal(file, name: notebook.source?.originalName ?? notebook.title)
                                 } label: {
                                     Label("Partager le PDF d’origine", systemImage: "doc")
                                 }
@@ -70,7 +71,7 @@ struct NotebookInfoSheet: View {
                         } header: {
                             Text(notebook.origin == .goodNotes ? "GoodNotes" : "PDF")
                         } footer: {
-                            Text("Continuez dans GoodNotes, exportez à nouveau en PDF, puis mettez à jour ici : les pages sont remplacées, et ce que vous avez ajouté dans Carnets reste sur les mêmes numéros de page.")
+                            Text("Continuez dans GoodNotes, exportez à nouveau en PDF, puis mettez à jour ici : chaque page est remplacée par sa nouvelle version, et ce que vous avez ajouté dans Carnets reste sur la bonne page.")
                         }
                     }
 
@@ -142,16 +143,27 @@ struct NotebookInfoSheet: View {
             }
             .fileImporter(isPresented: $showUpdatePicker, allowedContentTypes: [.pdf]) { result in
                 guard case .success(let url) = result else { return }
-                busy = "Mise à jour…"
-                Task {
-                    do {
-                        let updated = try await store.updateNotebook(notebookID, fromPDF: url)
-                        if updated?.origin == .goodNotes { recognizer.enqueueAllPages(of: notebookID) }
-                        message = "Carnet mis à jour : \(updated?.pages.count ?? 0) pages."
-                    } catch {
-                        message = error.localizedDescription
-                    }
-                    busy = nil
+                if store.sentToGoodNotesDate(notebookID) != nil {
+                    pendingUpdate = url
+                } else {
+                    runUpdate(url, returningFromGoodNotes: false)
+                }
+            }
+            .confirmationDialog("Ce PDF vient-il du carnet envoyé vers GoodNotes ?",
+                                isPresented: Binding(get: { pendingUpdate != nil }, set: { if !$0 { pendingUpdate = nil } }),
+                                titleVisibility: .visible) {
+                Button("Oui : ne pas doubler l’encre Carnets") {
+                    if let url = pendingUpdate { runUpdate(url, returningFromGoodNotes: true) }
+                    pendingUpdate = nil
+                }
+                Button("Non : garder toute l’encre Carnets") {
+                    if let url = pendingUpdate { runUpdate(url, returningFromGoodNotes: false) }
+                    pendingUpdate = nil
+                }
+                Button("Annuler", role: .cancel) { pendingUpdate = nil }
+            } message: {
+                if let date = store.sentToGoodNotesDate(notebookID) {
+                    Text("Vous avez envoyé ce carnet vers GoodNotes le \(date.formatted(date: .long, time: .shortened)). Son encre est alors imprimée dans le PDF : si cet export en provient, Carnets retire sa propre copie pour qu’elle n’apparaisse pas deux fois.")
                 }
             }
             .alert("Carnet", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
@@ -166,18 +178,47 @@ struct NotebookInfoSheet: View {
         .onAppear { title = notebook?.title ?? "" }
     }
 
+    private func runUpdate(_ url: URL, returningFromGoodNotes: Bool) {
+        busy = "Mise à jour…"
+        Task {
+            do {
+                let updated = try await store.updateNotebook(notebookID, fromPDF: url,
+                                                             returningFromGoodNotes: returningFromGoodNotes)
+                if updated?.origin == .goodNotes { recognizer.enqueueAllPages(of: notebookID) }
+                message = "Carnet mis à jour : \(updated?.pages.count ?? 0) pages."
+            } catch {
+                message = error.localizedDescription
+            }
+            busy = nil
+        }
+    }
+
+    /// Shares the imported PDF under its original name (GoodNotes names notebooks after the file).
+    private func shareOriginal(_ file: String, name: String) {
+        let source = store.files(for: notebookID).assetURL(file)
+        let title = (name as NSString).deletingPathExtension
+        let copy = PageRenderer.temporaryExportURL(title, ext: "pdf")
+        do {
+            try FileManager.default.copyItem(at: source, to: copy)
+            sharedFile = SharedFile(url: copy)
+        } catch {
+            sharedFile = SharedFile(url: source)
+        }
+    }
+
     private func exportForGoodNotes(_ notebook: Notebook) {
         store.flush(notebook.id)
         store.waitForPendingWrites()
+        guard let latest = store.notebook(notebook.id) else { return }
         let files = store.files(for: notebook.id)
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent(PageRenderer.exportFileName(notebook.title, ext: "pdf"))
+        let url = PageRenderer.temporaryExportURL(latest.title, ext: "pdf")
         busy = "Préparation du PDF…"
         Task {
             do {
                 try await Task.detached(priority: .userInitiated) {
-                    try? FileManager.default.removeItem(at: url)
-                    try PageRenderer.exportPDF(notebook: notebook, files: files, drawings: nil, to: url)
+                    try PageRenderer.exportPDF(notebook: latest, files: files, drawings: nil, to: url)
+                    // Remember what was printed, so the way back from GoodNotes doesn't double it.
+                    FlattenedExport.record(latest, files: files).save(to: files)
                 }.value
                 sharedFile = SharedFile(url: url)
             } catch {

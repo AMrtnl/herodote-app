@@ -283,6 +283,8 @@ nonisolated struct NotebookPage: Identifiable, Codable, Equatable, Sendable {
     var paper: PaperStyle
     var elements: [PageElement] = []
     var isBookmarked: Bool = false
+    /// Optional page title, shown in the outline (« Plan ») and the vault note.
+    var title: String = ""
     /// Best reading of the handwriting on the page (for "copy as text").
     var recognizedText: String = ""
     /// All plausible readings of the handwriting (used for search).
@@ -310,7 +312,7 @@ nonisolated struct NotebookPage: Identifiable, Codable, Equatable, Sendable {
     }
 
     nonisolated enum CodingKeys: String, CodingKey {
-        case id, width, height, background, paper, elements, isBookmarked
+        case id, width, height, background, paper, elements, isBookmarked, title
         case recognizedText, searchableText, sourceText, recognitionVersion, revision
     }
 
@@ -323,6 +325,7 @@ nonisolated struct NotebookPage: Identifiable, Codable, Equatable, Sendable {
         paper              = c.value(.paper, default: .white)
         elements           = c.value(.elements, default: [])
         isBookmarked       = c.value(.isBookmarked, default: false)
+        title              = c.value(.title, default: "")
         recognizedText     = c.value(.recognizedText, default: "")
         searchableText     = c.value(.searchableText, default: "")
         sourceText         = c.value(.sourceText, default: "")

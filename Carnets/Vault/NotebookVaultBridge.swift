@@ -48,9 +48,11 @@ final class NotebookVaultBridge {
         while VaultStore.shared.isScanning {
             try? await Task.sleep(for: .milliseconds(300))
         }
-        let ids = pending
-        pending = []
-        for id in ids where !Task.isCancelled {
+        // Ids leave `pending` one at a time: if a newer schedule cancels this run,
+        // the notebooks not yet exported are picked up by the next one.
+        for id in pending {
+            guard !Task.isCancelled else { return }
+            pending.remove(id)
             await export(id)
         }
     }

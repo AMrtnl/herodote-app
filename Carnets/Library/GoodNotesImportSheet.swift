@@ -20,6 +20,10 @@ import Observation
     var keepFolders = true
     var updateExisting = true
     var recognizeHandwriting = true
+    /// Exports of notebooks sent from Carnets: drop the Carnets ink already printed on the pages.
+    var returningFromGoodNotes = true
+    /// Notebooks created or updated during this session (never updated twice).
+    @ObservationIgnored private var touched: Set<UUID> = []
 
     var importedCount: Int { entries.filter { $0.status == .imported || $0.status == .updated }.count }
 
@@ -55,25 +59,39 @@ import Observation
         let index = entries.count
         entries.append(Entry(title: candidate.title, detail: "Importation…", status: .working))
         switch candidate.kind {
+        case .notDownloaded:
+            entries[index].status = .skipped
+            entries[index].detail = "Pas encore téléchargé depuis iCloud : le téléchargement a été demandé, réessayez dans un instant."
         case .goodNotesPackage:
             entries[index].status = .skipped
             entries[index].detail = "Fichier .goodnotes : son format est propre à GoodNotes. Dans GoodNotes, choisissez Partager › Exporter › PDF pour importer les pages et l’écriture."
         case .pdf:
             do {
-                let folderID = keepFolders ? store.folderID(forPath: candidate.folderPath) : nil
+                let url = candidate.url
+                let isGoodNotes = await Task.detached(priority: .userInitiated) {
+                    GoodNotesImporter.isGoodNotesPDF(url)
+                }.value
                 let notebook: Notebook?
-                if updateExisting, let existing = store.importedNotebook(matching: candidate.url.lastPathComponent) {
-                    notebook = try await store.updateNotebook(existing.id, fromPDF: candidate.url)
+                if updateExisting,
+                   let existing = store.importedNotebook(matching: url.lastPathComponent,
+                                                         origin: isGoodNotes ? .goodNotes : .pdf,
+                                                         folderPath: keepFolders ? candidate.folderPath : nil,
+                                                         excluding: touched) {
+                    let roundTrip = returningFromGoodNotes && store.sentToGoodNotesDate(existing.id) != nil
+                    notebook = try await store.updateNotebook(existing.id, fromPDF: url, returningFromGoodNotes: roundTrip)
                     entries[index].status = .updated
-                    entries[index].detail = "\(notebook?.pages.count ?? 0) pages · mis à jour, l’encre ajoutée dans Carnets est conservée"
+                    entries[index].detail = "\(notebook?.pages.count ?? 0) pages · mis à jour, "
+                        + (roundTrip ? "l’encre déjà envoyée vers GoodNotes n’est pas doublée" : "l’encre ajoutée dans Carnets est conservée")
                 } else {
-                    notebook = try await store.importPDF(from: candidate.url, title: candidate.title, folderID: folderID)
+                    let folderID = keepFolders ? store.folderID(forPath: candidate.folderPath) : nil
+                    notebook = try await store.importPDF(from: url, title: candidate.title, folderID: folderID)
                     entries[index].status = .imported
                     let origin = notebook?.origin == .goodNotes ? "GoodNotes" : "PDF"
                     entries[index].detail = "\(notebook?.pages.count ?? 0) pages · \(origin)"
                         + (candidate.folderPath.isEmpty || !keepFolders ? "" : " · dossier « \(candidate.folderPath.joined(separator: " › ")) »")
                 }
                 entries[index].notebookID = notebook?.id
+                if let id = notebook?.id { touched.insert(id) }
                 if recognizeHandwriting, let id = notebook?.id {
                     ImportedTextRecognizer.shared.enqueueAllPages(of: id)
                 }
@@ -128,6 +146,7 @@ struct GoodNotesImportSheet: View {
                     Toggle("Recréer les dossiers de GoodNotes", isOn: $session.keepFolders)
                     Toggle("Mettre à jour les carnets déjà importés", isOn: $session.updateExisting)
                     Toggle("Rendre l’écriture cherchable", isOn: $session.recognizeHandwriting)
+                    Toggle("Ne pas doubler l’encre envoyée vers GoodNotes", isOn: $session.returningFromGoodNotes)
                 }
 
                 Section {
