@@ -21,6 +21,8 @@ enum AppSection: Hashable {
 
 enum NotesRoute: Hashable {
     case note(String)
+    /// A notebook's companion note, edited as Markdown instead of opening the notebook.
+    case companion(String)
     case folder(String)
     case tag(String)
     case project(String)
@@ -47,18 +49,20 @@ enum NotesRoute: Hashable {
         path = []
     }
 
-    /// Opens a note from anywhere; notebook companion notes open the handwriting editor.
-    func openNote(_ notePath: String) {
+    /// Opens a note from anywhere. Notebook companion notes open the handwriting editor,
+    /// unless `followNotebook` is false (to edit the companion note itself).
+    func openNote(_ notePath: String, followNotebook: Bool = true) {
         let vault = VaultStore.shared
-        if let id = vault.note(notePath)?.notebookID {
+        if followNotebook, let id = vault.note(notePath)?.notebookID {
             openNotebook(id)
             return
         }
+        let route: NotesRoute = vault.note(notePath)?.notebookID != nil ? .companion(notePath) : .note(notePath)
         if section == nil || section?.isLibrary == true {
             section = .notes
-            path = [.note(notePath)]
+            path = [route]
         } else {
-            path.append(.note(notePath))
+            path.append(route)
         }
     }
 

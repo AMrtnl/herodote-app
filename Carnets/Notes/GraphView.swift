@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - GraphView (Obsidian-style force-directed graph of linked notes)
 

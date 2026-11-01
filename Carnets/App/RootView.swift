@@ -98,6 +98,9 @@ struct NotesStack<Root: View>: View {
         case .note(let path):
             NoteEditorView(path: path) { next in router.push(.note(next)) }
                 .id(path)
+        case .companion(let path):
+            NoteEditorView(path: path) { next in router.push(.note(next)) }
+                .id("companion-" + path)
         case .folder(let folder):
             NotesBrowserView(folder: folder)
         case .tag(let tag):

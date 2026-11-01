@@ -419,7 +419,7 @@ struct NotebookEditorView: View {
             NotebookVaultBridge.shared.schedule(id)
             try? await Task.sleep(for: .seconds(3))
             if let path = NotebookVaultBridge.shared.companionPath(for: id) {
-                AppRouter.shared.openNote(path)
+                AppRouter.shared.openNote(path, followNotebook: false)
             }
         }
     }
